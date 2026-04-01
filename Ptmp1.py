@@ -2,6 +2,65 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import math
+import itur
+import astropy.units as u
+
+# --- Link Budget & ITU-R Math ---
+@st.cache_data
+def calculate_coverage_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, threshold):
+    """Calculates max radius in meters for 99.9%, 99.95%, and 99.99% availability."""
+    availabilities = [99.9, 99.95, 99.99]
+    radii_results = {}
+    
+    # 1. Setup standard atmospheric conditions using astropy.units
+    f = f_GHz * u.GHz
+    T = 15 * u.deg_C
+    P = 1013 * u.hPa
+    rho = 7.5 * u.g / u.m**3
+    
+    # Calculate specific gaseous attenuation (dB/km)
+    gamma_g_qty = itur.models.itu676.gaseous_specific_attenuation(f, P, T, rho)
+    gamma_g = gamma_g_qty.value 
+    
+    for avail in availabilities:
+        # Exceedance probability (e.g., 99.9% availability -> 0.1% exceedance)
+        p = 100.0 - avail
+        
+        # 2. Calculate Rainfall Rate (mm/hr) for this specific lat/lon and probability
+        R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
+        
+        # 3. Calculate Specific Rain Attenuation (dB/km) - Assuming horizontal polarization (0 deg)
+        gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0 * u.deg, 0)
+        gamma_r = gamma_r_qty.value
+        
+        # 4. Binary search to find the maximum distance
+        min_d_km = 0.01
+        max_d_km = 50.0  # Search up to 50 km
+        best_d_km = min_d_km
+        
+        for _ in range(40): # 40 iterations provides cm-level precision
+            mid_d = (min_d_km + max_d_km) / 2.0
+            
+            # Free Space Path Loss (dB)
+            fspl = 20 * math.log10(mid_d) + 20 * math.log10(f_GHz) + 92.45
+            
+            # Total Loss
+            total_loss = fspl + (gamma_g * mid_d) + (gamma_r * mid_d)
+            
+            # Received Power
+            rx_power = tx_power + tx_gain + rx_gain - total_loss
+            
+            if rx_power >= threshold:
+                min_d_km = mid_d
+                best_d_km = mid_d
+            else:
+                max_d_km = mid_d
+                
+        # Convert final km radius to meters for Folium
+        radii_results[avail] = best_d_km * 1000.0 
+        
+    return radii_results
+
 
 # --- Helper Function: Calculate Sector Polygon ---
 def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
@@ -39,11 +98,8 @@ def add_ap(lat, lon, name=None):
         name = f"AP {st.session_state.ap_counter}"
         st.session_state.ap_counter += 1
     
-    # 120-degree reuse logic: calculate how many channels fit in 120 degrees
     beam_width = 60
     num_channels_reuse = max(1, int(120 / beam_width)) 
-    
-    # Assign channels sequentially, then repeat (e.g., for 60deg: Ch1, Ch2, Ch1, Ch2...)
     default_sectors = [{"id": i+1, "channel": (i % num_channels_reuse) + 1} for i in range(6)]
         
     st.session_state.aps.append({
@@ -66,7 +122,6 @@ with st.sidebar:
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
     
-    # NEW: Global CPE Parameters
     col_cpe1, col_cpe2 = st.columns(2)
     cpe_gain = col_cpe1.number_input("CPE Gain (dBi)", value=15.0, step=1.0)
     cpe_threshold = col_cpe2.number_input("CPE Threshold (dBm)", value=-70.0, step=1.0)
@@ -101,7 +156,6 @@ with st.sidebar:
             
             current_sectors = ap.get("sectors", [])
             if new_num_sec > len(current_sectors):
-                # Apply reuse logic to newly appended sectors if the user increases sector count
                 num_channels_reuse = max(1, int(120 / new_bw))
                 for s_idx in range(len(current_sectors), new_num_sec):
                     current_sectors.append({"id": s_idx + 1, "channel": (s_idx % num_channels_reuse) + 1})
@@ -129,21 +183,38 @@ with st.sidebar:
 
 # --- 3. Map Generation ---
 start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
-m = folium.Map(location=start_loc, zoom_start=13)
+m = folium.Map(location=start_loc, zoom_start=12)
 
-# Dictionary mapping Channel Numbers to specific hex colors
 channel_colors = {
-    1: '#FF3333', # Red
-    2: '#3357FF', # Blue
-    3: '#33FF57', # Green
-    4: '#F5FF33', # Yellow
-    5: '#FF33F5', # Pink
-    6: '#33FFF5', # Cyan
-    7: '#FFA533', # Orange
-    8: '#A533FF', # Purple
+    1: '#FF3333', 2: '#3357FF', 3: '#33FF57', 4: '#F5FF33', 
+    5: '#FF33F5', 6: '#33FFF5', 7: '#FFA533', 8: '#A533FF',
 }
 
+# Availability circle colors: 99.9 (Green/largest), 99.95 (Orange/mid), 99.99 (Red/smallest)
+avail_colors = {99.9: '#2ECC71', 99.95: '#E67E22', 99.99: '#E74C3C'}
+
 for ap in st.session_state.aps:
+    # 1. Calculate the dynamic coverage radii
+    radii = calculate_coverage_radii(
+        ap["lat"], ap["lon"], global_freq, 
+        ap["tx_power"], ap["antenna_gain"], 
+        cpe_gain, cpe_threshold
+    )
+    
+    # 2. Draw Coverage Circles (drawn largest to smallest so they stack properly)
+    for avail in [99.9, 99.95, 99.99]:
+        radius_m = radii[avail]
+        folium.Circle(
+            location=[ap["lat"], ap["lon"]],
+            radius=radius_m,
+            color=avail_colors[avail],
+            weight=2,
+            fill=False,
+            dash_array='5, 5',
+            tooltip=f"{ap['name']} - {avail}% Avail ({radius_m/1000:.2f} km)"
+        ).add_to(m)
+
+    # 3. Place the AP Marker
     folium.Marker(
         [ap["lat"], ap["lon"]],
         popup=f"{ap['name']} ({global_freq}GHz)",
@@ -151,23 +222,24 @@ for ap in st.session_state.aps:
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
     
+    # 4. Draw the Sectors using the 99.9% radius as the visual guide
     start_angle = 0 
-    visual_radius_m = 800 
+    visual_radius_m = radii[99.9]
     
     for idx, sector in enumerate(ap["sectors"]):
         end_angle = start_angle + ap["beam_width"]
         polygon_points = get_sector_polygon(ap["lat"], ap["lon"], visual_radius_m, start_angle, end_angle)
         
-        # Determine color based on the channel (default to gray if channel > 8)
         ch_num = sector["channel"]
         sec_color = channel_colors.get(ch_num, '#888888')
         
         folium.Polygon(
             locations=polygon_points,
             color=sec_color,
+            weight=1,
             fill=True,
             fill_color=sec_color,
-            fill_opacity=0.4,
+            fill_opacity=0.3,
             tooltip=f"{ap['name']} - Sector {sector['id']} (Ch: {ch_num})"
         ).add_to(m)
         
