@@ -19,8 +19,10 @@ def calculate_coverage_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, thresh
     rho = 7.5 * u.g / u.m**3
     
     # Calculate specific gaseous attenuation (dB/km)
-    gamma_g_qty = itur.models.itu676.gaseous_specific_attenuation(f, P, T, rho)
+        
+    gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
     gamma_g = gamma_g_qty.value 
+
     
     for avail in availabilities:
         # Exceedance probability (e.g., 99.9% availability -> 0.1% exceedance)
@@ -30,7 +32,7 @@ def calculate_coverage_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, thresh
         R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
         
         # 3. Calculate Specific Rain Attenuation (dB/km) - Assuming horizontal polarization (0 deg)
-        gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0 * u.deg, 0)
+        gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
         gamma_r = gamma_r_qty.value
         
         # 4. Binary search to find the maximum distance
