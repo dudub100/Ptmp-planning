@@ -4,52 +4,58 @@ from streamlit_folium import st_folium
 import math
 import itur
 import astropy.units as u
+import json
+import os
+
+# --- Data Persistence Functions ---
+DATA_FILE = "ap_data.json"
+
+def load_data():
+    """Loads AP data from a local JSON file if it exists."""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_data():
+    """Saves the current AP session state to a local JSON file."""
+    with open(DATA_FILE, "w") as f:
+        json.dump(st.session_state.aps, f)
 
 # --- Link Budget & ITU-R Math ---
 @st.cache_data
 def calculate_coverage_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, threshold):
-    """Calculates max radius in meters for 99.9%, 99.95%, and 99.99% availability."""
     availabilities = [99.9, 99.95, 99.99]
     radii_results = {}
     
-    # 1. Setup standard atmospheric conditions using astropy.units
     f = f_GHz * u.GHz
     T = 15 * u.deg_C
     P = 1013 * u.hPa
     rho = 7.5 * u.g / u.m**3
     
-    # Calculate specific gaseous attenuation (dB/km)
-        
+    # Fixed gaseous attenuation call
     gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
     gamma_g = gamma_g_qty.value 
-
     
     for avail in availabilities:
-        # Exceedance probability (e.g., 99.9% availability -> 0.1% exceedance)
         p = 100.0 - avail
-        
-        # 2. Calculate Rainfall Rate (mm/hr) for this specific lat/lon and probability
         R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
         
-        # 3. Calculate Specific Rain Attenuation (dB/km) - Assuming horizontal polarization (0 deg)
+        # Fixed rain attenuation call (removed .deg)
         gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
         gamma_r = gamma_r_qty.value
         
-        # 4. Binary search to find the maximum distance
         min_d_km = 0.01
-        max_d_km = 50.0  # Search up to 50 km
+        max_d_km = 50.0  
         best_d_km = min_d_km
         
-        for _ in range(40): # 40 iterations provides cm-level precision
+        for _ in range(40): 
             mid_d = (min_d_km + max_d_km) / 2.0
-            
-            # Free Space Path Loss (dB)
             fspl = 20 * math.log10(mid_d) + 20 * math.log10(f_GHz) + 92.45
-            
-            # Total Loss
             total_loss = fspl + (gamma_g * mid_d) + (gamma_r * mid_d)
-            
-            # Received Power
             rx_power = tx_power + tx_gain + rx_gain - total_loss
             
             if rx_power >= threshold:
@@ -58,11 +64,9 @@ def calculate_coverage_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, thresh
             else:
                 max_d_km = mid_d
                 
-        # Convert final km radius to meters for Folium
         radii_results[avail] = best_d_km * 1000.0 
         
     return radii_results
-
 
 # --- Helper Function: Calculate Sector Polygon ---
 def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
@@ -89,9 +93,13 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
 
 # --- 1. Session State Initialization ---
 if 'aps' not in st.session_state:
-    st.session_state.aps = []
+    st.session_state.aps = load_data() # Load saved data on startup
 if 'ap_counter' not in st.session_state:
-    st.session_state.ap_counter = 1
+    # Set counter based on highest existing AP number to avoid naming collisions
+    if st.session_state.aps:
+        st.session_state.ap_counter = len(st.session_state.aps) + 1
+    else:
+        st.session_state.ap_counter = 1
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
 
@@ -115,6 +123,7 @@ def add_ap(lat, lon, name=None):
         "beam_width": beam_width,
         "sectors": default_sectors
     })
+    save_data() # Auto-save after adding
 
 # --- 2. Main UI & Sidebar ---
 st.set_page_config(page_title="PtMP Planner", layout="wide")
@@ -156,7 +165,9 @@ with st.sidebar:
             new_num_sec = col3.number_input("Sectors", value=ap["num_sectors"], min_value=1, step=1, key=f"numsec_{i}")
             new_bw = col4.number_input("Beam Width (°)", value=ap["beam_width"], min_value=1, step=1, key=f"bw_{i}")
             
-            current_sectors = ap.get("sectors", [])
+            # ENSURE SECTORS ARE SEQUENTIAL BEFORE MODIFYING
+            current_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+            
             if new_num_sec > len(current_sectors):
                 num_channels_reuse = max(1, int(120 / new_bw))
                 for s_idx in range(len(current_sectors), new_num_sec):
@@ -172,6 +183,7 @@ with st.sidebar:
                     new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=sector["channel"], step=1, key=f"ch_{i}_{s_idx}")
                     updated_sectors.append({"id": s_idx + 1, "channel": new_ch})
 
+            # Check for changes
             if (new_name != ap["name"] or new_lat != ap["lat"] or new_lon != ap["lon"] or 
                 new_h != ap["height"] or new_tx != ap["tx_power"] or new_gain != ap["antenna_gain"] or
                 new_num_sec != ap["num_sectors"] or new_bw != ap["beam_width"] or updated_sectors != ap["sectors"]):
@@ -181,6 +193,14 @@ with st.sidebar:
                     "height": new_h, "tx_power": new_tx, "antenna_gain": new_gain,
                     "num_sectors": new_num_sec, "beam_width": new_bw, "sectors": updated_sectors
                 })
+                save_data() # Auto-save on edit
+                st.rerun()
+            
+            # DELETE BUTTON
+            st.divider()
+            if st.button("🗑️ Delete AP", type="primary", key=f"del_{i}"):
+                st.session_state.aps.pop(i)
+                save_data() # Auto-save after delete
                 st.rerun()
 
 # --- 3. Map Generation ---
@@ -192,18 +212,15 @@ channel_colors = {
     5: '#FF33F5', 6: '#33FFF5', 7: '#FFA533', 8: '#A533FF',
 }
 
-# Availability circle colors: 99.9 (Green/largest), 99.95 (Orange/mid), 99.99 (Red/smallest)
 avail_colors = {99.9: '#2ECC71', 99.95: '#E67E22', 99.99: '#E74C3C'}
 
 for ap in st.session_state.aps:
-    # 1. Calculate the dynamic coverage radii
     radii = calculate_coverage_radii(
         ap["lat"], ap["lon"], global_freq, 
         ap["tx_power"], ap["antenna_gain"], 
         cpe_gain, cpe_threshold
     )
     
-    # 2. Draw Coverage Circles (drawn largest to smallest so they stack properly)
     for avail in [99.9, 99.95, 99.99]:
         radius_m = radii[avail]
         folium.Circle(
@@ -216,7 +233,6 @@ for ap in st.session_state.aps:
             tooltip=f"{ap['name']} - {avail}% Avail ({radius_m/1000:.2f} km)"
         ).add_to(m)
 
-    # 3. Place the AP Marker
     folium.Marker(
         [ap["lat"], ap["lon"]],
         popup=f"{ap['name']} ({global_freq}GHz)",
@@ -224,11 +240,13 @@ for ap in st.session_state.aps:
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
     
-    # 4. Draw the Sectors using the 99.9% radius as the visual guide
     start_angle = 0 
     visual_radius_m = radii[99.9]
     
-    for idx, sector in enumerate(ap["sectors"]):
+    # Ensure sectors are sorted for drawing too
+    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+    
+    for idx, sector in enumerate(sorted_sectors):
         end_angle = start_angle + ap["beam_width"]
         polygon_points = get_sector_polygon(ap["lat"], ap["lon"], visual_radius_m, start_angle, end_angle)
         
