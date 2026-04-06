@@ -78,21 +78,18 @@ def fetch_buildings_from_osm(south, west, north, east):
     except Exception as e:
         return [], str(e)
 
-# --- Link Budget & ITU-R Math ---
+# --- Link Budget Math ---
 @st.cache_data
 def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_figure, channel_bw, availability):
     radii_results = {}
     bw_hz = channel_bw * 1e6
     noise_floor_dbm = -174 + (10 * math.log10(bw_hz)) + noise_figure
-    
     f = f_GHz * u.GHz
     T = 15 * u.deg_C
     P = 1013 * u.hPa
     rho = 7.5 * u.g / u.m**3
-    
     gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
     gamma_g = gamma_g_qty.value 
-    
     p = 100.0 - availability 
     R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
     gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
@@ -101,35 +98,25 @@ def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_f
     for mcs_index in range(12): 
         mcs_data = MCS_TABLE[mcs_index]
         rx_threshold = noise_floor_dbm + mcs_data["snr"]
-        
-        min_d_km = 0.01
-        max_d_km = 50.0  
-        best_d_km = min_d_km
+        min_d_km, max_d_km, best_d_km = 0.01, 50.0, 0.01
         
         for _ in range(40): 
             mid_d = (min_d_km + max_d_km) / 2.0
             fspl = 20 * math.log10(mid_d) + 20 * math.log10(f_GHz) + 92.45
             total_loss = fspl + (gamma_g * mid_d) + (gamma_r * mid_d)
             rx_power = tx_power + tx_gain + rx_gain - total_loss
-            
             if rx_power >= rx_threshold:
                 min_d_km = mid_d
                 best_d_km = mid_d
             else:
                 max_d_km = mid_d
                 
-        radii_results[mcs_index] = {
-            "radius_m": best_d_km * 1000.0,
-            "capacity": mcs_data["caps"].get(channel_bw, 0),
-            "mod": mcs_data["mod"]
-        }
-        
+        radii_results[mcs_index] = {"radius_m": best_d_km * 1000.0, "capacity": mcs_data["caps"].get(channel_bw, 0), "mod": mcs_data["mod"]}
     return radii_results
 
 def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     R = 6378137
-    lat_rad = math.radians(lat)
-    lon_rad = math.radians(lon)
+    lat_rad, lon_rad = math.radians(lat), math.radians(lon)
     points = [(lat, lon)]
     step = 5
     angles = list(range(int(start_angle), int(end_angle), step))
@@ -144,46 +131,26 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     return points
 
 # --- 1. Session State Initialization ---
-if 'aps' not in st.session_state:
-    st.session_state.aps = load_data() 
-if 'ap_counter' not in st.session_state:
-    st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
+if 'aps' not in st.session_state: st.session_state.aps = load_data() 
+if 'ap_counter' not in st.session_state: st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
 
-if 'cpes' not in st.session_state:
-    st.session_state.cpes = load_cpes()
-if 'cpe_counter' not in st.session_state:
-    st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
+if 'cpes' not in st.session_state: st.session_state.cpes = load_cpes()
+if 'cpe_counter' not in st.session_state: st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
 
-if 'all_drawings' not in st.session_state:
-    st.session_state.all_drawings = None 
+if 'all_drawings' not in st.session_state: st.session_state.all_drawings = []
+if 'map_center' not in st.session_state: st.session_state.map_center = None
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
 
-if 'map_bounds' not in st.session_state:
-    st.session_state.map_bounds = None
-if 'map_center' not in st.session_state:
-    st.session_state.map_center = None
-if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = 13
+# SMART MAP TRIGGER: This safely refreshes the map ONLY when needed to clear drawings
+if 'map_refresh' not in st.session_state: st.session_state.map_refresh = 0
 
-def add_ap(lat, lon, name=None):
-    if name is None:
-        name = f"AP {st.session_state.ap_counter}"
-        st.session_state.ap_counter += 1
-    
-    beam_width = 60
-    num_channels_reuse = max(1, int(120 / beam_width)) 
-    default_sectors = [{"id": i+1, "channel": (i % num_channels_reuse) + 1} for i in range(6)]
-        
+def add_ap(lat, lon):
+    name = f"AP {st.session_state.ap_counter}"
+    st.session_state.ap_counter += 1
     st.session_state.aps.append({
-        "name": name,
-        "lat": round(float(lat), 6),
-        "lon": round(float(lon), 6),
-        "height": 10.0,
-        "tx_power": 23.0,
-        "antenna_gain": 20.0,
-        "channel_bw": 80,    
-        "num_sectors": 6,
-        "beam_width": beam_width,
-        "sectors": default_sectors
+        "name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "height": 10.0,
+        "tx_power": 23.0, "antenna_gain": 20.0, "channel_bw": 80, "num_sectors": 6, "beam_width": 60,
+        "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
     })
     save_data()
 
@@ -209,132 +176,91 @@ with st.sidebar:
     
     st.divider()
 
-    # --- Area of Interest Building Detection ---
     st.header("CPE Discovery")
-    st.markdown("1. Use the **Polygon/Square Tool** on the map to draw an area.\n2. Click the button below.")
+    st.markdown("1. Use the **Polygon/Square Tool** to draw an area.\n2. Click the button below.")
     max_cpes = st.number_input("Max Buildings to Detect", value=64, min_value=1, step=10)
     
     if st.button("🏗️ Detect Buildings in Drawn Area"):
-        if not st.session_state.all_drawings:
-            st.warning("No drawing found! Please draw a shape on the map first using the toolbar.")
+        polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] == "Polygon"]
+        
+        if not polygons:
+            st.warning("Please draw a polygon or rectangle on the map first.")
         else:
             with st.spinner("Detecting buildings..."):
-                # Extract bounds of the LAST drawn polygon/rectangle
-                polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] == "Polygon"]
+                last_shape = polygons[-1]
+                coords = last_shape["geometry"]["coordinates"][0]
                 
-                if not polygons:
-                    st.warning("Please draw a polygon/rectangle. The marker point cannot be used for area detection.")
+                lats, lons = [pt[1] for pt in coords], [pt[0] for pt in coords]
+                south, north = min(lats), max(lats)
+                west, east = min(lons), max(lons)
+                
+                buildings, error = fetch_buildings_from_osm(south, west, north, east)
+                
+                if error:
+                    st.error(f"Detection failed. Reason: {error}")
+                elif not buildings:
+                    st.warning("0 buildings found in this specific area.")
                 else:
-                    last_shape = polygons[-1]
-                    coords = last_shape["geometry"]["coordinates"][0]
-                    
-                    lats = [pt[1] for pt in coords]
-                    lons = [pt[0] for pt in coords]
-                    south, north = min(lats), max(lats)
-                    west, east = min(lons), max(lons)
-                    
-                    buildings, error = fetch_buildings_from_osm(south, west, north, east)
-                    
-                    if error:
-                        st.error(f"Detection failed. Reason: {error}")
-                    elif not buildings:
-                        st.warning("0 buildings found. Try drawing over a denser residential area.")
-                    else:
-                        added_count = 0
-                        for bldg in buildings:
-                            if added_count >= max_cpes: break
+                    added_count = 0
+                    for bldg in buildings:
+                        if added_count >= max_cpes: break
+                        tags, center = bldg.get('tags', {}), bldg.get('center', {})
+                        if not center: continue
+                        
+                        h = tags.get('height')
+                        if h:
+                            try: h = float(h.split()[0])
+                            except: h = 8.0
+                        elif tags.get('building:levels'):
+                            try: h = float(tags.get('building:levels')) * 3.5
+                            except: h = 8.0
+                        else: h = 8.0
                             
-                            tags = bldg.get('tags', {})
-                            center = bldg.get('center', {})
-                            if not center: continue
-                            
-                            h = tags.get('height')
-                            if h:
-                                try: h = float(h.split()[0])
-                                except: h = 8.0
-                            elif tags.get('building:levels'):
-                                try: h = float(tags.get('building:levels')) * 3.5
-                                except: h = 8.0
-                            else:
-                                h = 8.0
-                                
-                            st.session_state.cpes.append({
-                                "name": f"CPE {st.session_state.cpe_counter}",
-                                "lat": center['lat'],
-                                "lon": center['lon'],
-                                "height": h
-                            })
-                            st.session_state.cpe_counter += 1
-                            added_count += 1
-                            
-                        save_cpes()
-                        if added_count >= max_cpes:
-                            st.success(f"Limit reached. Detected {added_count} buildings.")
-                        else:
-                            st.success(f"Successfully detected {added_count} buildings!")
-                        st.rerun()
+                        st.session_state.cpes.append({"name": f"CPE {st.session_state.cpe_counter}", "lat": center['lat'], "lon": center['lon'], "height": h})
+                        st.session_state.cpe_counter += 1
+                        added_count += 1
+                        
+                    save_cpes()
+                    st.session_state.map_refresh += 1 # Forces map to clear the drawn blue box
+                    st.session_state.all_drawings = []
+                    st.success(f"Successfully detected {added_count} buildings!")
+                    st.rerun()
 
-    # --- UPGRADE: Clean Excel-like Table for CPEs ---
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=True):
         if st.session_state.cpes:
             if st.button("🗑️ Clear All Buildings", type="primary"):
-                st.session_state.cpes = []
-                st.session_state.cpe_counter = 1
+                st.session_state.cpes, st.session_state.cpe_counter = [], 1
                 save_cpes()
                 st.rerun()
                 
-            st.markdown("Edit CPE names and heights directly in the table below:")
             edited_cpes = st.data_editor(
                 st.session_state.cpes,
-                column_config={
-                    "name": "CPE Name",
-                    "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.6f"),
-                    "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.6f"),
-                    "height": st.column_config.NumberColumn("Height (m)", min_value=0.0)
-                },
-                hide_index=True,
-                num_rows="dynamic", # Allows user to delete rows directly from the table
-                key="cpe_editor"
+                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.6f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.6f"), "height": st.column_config.NumberColumn("H (m)")},
+                hide_index=True, num_rows="dynamic", key="cpe_editor"
             )
-            
-            # Save automatically if user edits the table
             if json.dumps(edited_cpes) != json.dumps(st.session_state.cpes):
                 st.session_state.cpes = edited_cpes
                 save_cpes()
                 st.rerun()
         else:
-            st.info("No CPEs added yet. Draw an area to detect buildings.")
+            st.info("No CPEs added yet.")
                 
     st.divider()
 
     st.header("AP Management")
-    st.markdown("To drop an AP, click the **Marker tool** (📍) on the map, then click where you want it.")
-    with st.expander("➕ Add AP by Coordinates"):
-        man_lat = st.number_input("Latitude", value=32.1750, format="%.6f")
-        man_lon = st.number_input("Longitude", value=34.9069, format="%.6f")
-        if st.button("Add to Map"):
-            add_ap(man_lat, man_lon)
-            st.rerun()
+    st.markdown("To drop an AP, click the **Marker tool** (📍) on the map toolbar, then click where you want it.")
             
-    st.divider()
     st.subheader("Existing APs")
-    
     for i, ap in enumerate(st.session_state.aps):
-        if "channel_bw" not in ap:
-            ap["channel_bw"] = 80
-            
+        if "channel_bw" not in ap: ap["channel_bw"] = 80
         with st.expander(ap["name"]):
             st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}")
-            
             col1, col2 = st.columns(2)
             st.session_state.aps[i]["lat"] = col1.number_input("Latitude", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
             st.session_state.aps[i]["lon"] = col2.number_input("Longitude", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
-            
             col_h, col_bw = st.columns(2)
             st.session_state.aps[i]["height"] = col_h.number_input("Height (m)", value=float(ap["height"]), step=1.0, key=f"h_{i}")
             st.session_state.aps[i]["channel_bw"] = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
-            
-            st.markdown("**RF Parameters**")
             col3, col4 = st.columns(2)
             st.session_state.aps[i]["tx_power"] = col3.number_input("Tx Power (dBm)", value=float(ap["tx_power"]), step=1.0, key=f"tx_{i}")
             st.session_state.aps[i]["antenna_gain"] = col4.number_input("Ant. Gain (dBi)", value=float(ap["antenna_gain"]), step=1.0, key=f"gain_{i}")
@@ -349,155 +275,85 @@ with st.sidebar:
             elif st.session_state.aps[i]["num_sectors"] < len(current_sectors):
                 current_sectors = current_sectors[:st.session_state.aps[i]["num_sectors"]]
             
-            st.markdown("**Sector Channels**")
             updated_sectors = []
             sec_cols = st.columns(3)
             for s_idx, sector in enumerate(current_sectors):
                 with sec_cols[s_idx % 3]:
                     new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=int(sector["channel"]), step=1, key=f"ch_{i}_{s_idx}")
                     updated_sectors.append({"id": s_idx + 1, "channel": new_ch})
-            
             st.session_state.aps[i]["sectors"] = updated_sectors
             
-            st.divider()
             if st.button("🗑️ Delete AP", type="primary", key=f"del_{i}"):
                 st.session_state.aps.pop(i)
                 save_data()
                 st.rerun()
-
     save_data()
 
 # --- 3. Clean Map Generation ---
 if st.session_state.map_center:
-    start_loc = st.session_state.map_center
-    zoom = st.session_state.map_zoom
+    start_loc, zoom = st.session_state.map_center, st.session_state.map_zoom
 elif st.session_state.aps:
-    start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
-    zoom = 13
+    start_loc, zoom = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]], 13
 else:
-    start_loc = [32.1750, 34.9069]
-    zoom = 13
+    start_loc, zoom = [32.1750, 34.9069], 13
 
 m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
 
-# ADD DRAWING TOOL
-# Enabled Polygon/Rectangle for area selection, and Marker for dropping APs
 Draw(
     export=False,
-    draw_options={
-        'polyline': False,
-        'polygon': True,
-        'rectangle': True,
-        'circle': False,
-        'marker': True,
-        'circlemarker': False
-    }
+    draw_options={'polyline': False, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': True, 'circlemarker': False}
 ).add_to(m)
 
 for ap in st.session_state.aps:
-    mcs_data = calculate_all_mcs_radii(
-        ap["lat"], ap["lon"], global_freq, 
-        ap["tx_power"], ap["antenna_gain"], 
-        cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
-    )
-    
+    mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target)
     for mcs_level in range(12):
-        if mcs_level < min_mcs_display:
-            continue
-            
-        data = mcs_data[mcs_level]
-        folium.Circle(
-            location=[ap["lat"], ap["lon"]],
-            radius=data['radius_m'],
-            color=MCS_COLORS[mcs_level],
-            weight=1,
-            fill=False,
-            dash_array='3, 4',
-        ).add_to(m)
+        if mcs_level < min_mcs_display: continue
+        folium.Circle(location=[ap["lat"], ap["lon"]], radius=mcs_data[mcs_level]['radius_m'], color=MCS_COLORS[mcs_level], weight=1, fill=False, dash_array='3, 4').add_to(m)
 
     start_angle = 0 
-    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
-    
-    for idx, sector in enumerate(sorted_sectors):
+    for idx, sector in enumerate(sorted(ap.get("sectors", []), key=lambda x: x["id"])):
         end_angle = start_angle + ap["beam_width"]
-        
         for mcs_level in range(12):
-            if mcs_level < min_mcs_display:
-                continue 
-                
-            data = mcs_data[mcs_level]
-            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
-            
-            folium.Polygon(
-                locations=polygon_points,
-                stroke=False, 
-                fill=True,
-                fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.15,
-                tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
-            ).add_to(m)
+            if mcs_level < min_mcs_display: continue 
+            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[mcs_level]['radius_m'], start_angle, end_angle)
+            folium.Polygon(locations=polygon_points, stroke=False, fill=True, fill_color=MCS_COLORS[mcs_level], fill_opacity=0.15, tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({mcs_data[mcs_level]['capacity']} Mbps)").add_to(m)
             
         largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[min_mcs_display]['radius_m'], start_angle, end_angle)
-        folium.PolyLine(
-            locations=largest_polygon,
-            color='black',
-            weight=1,
-            opacity=0.4
-        ).add_to(m)
-        
+        folium.PolyLine(locations=largest_polygon, color='black', weight=1, opacity=0.4).add_to(m)
         start_angle = end_angle
 
-    folium.Marker(
-        [ap["lat"], ap["lon"]],
-        popup=f"{ap['name']} ({global_freq}GHz)",
-        tooltip=ap["name"],
-        icon=folium.Icon(color="black", icon="wifi", prefix="fa")
-    ).add_to(m)
+    folium.Marker([ap["lat"], ap["lon"]], popup=f"{ap['name']} ({global_freq}GHz)", tooltip=ap["name"], icon=folium.Icon(color="black", icon="wifi", prefix="fa")).add_to(m)
 
 for cpe in st.session_state.cpes:
-    folium.CircleMarker(
-        location=[cpe["lat"], cpe["lon"]],
-        radius=4,
-        color="#0000FF",
-        fill=True,
-        fill_opacity=0.8,
-        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
-    ).add_to(m)
+    folium.CircleMarker(location=[cpe["lat"], cpe["lon"]], radius=4, color="#0000FF", fill=True, fill_opacity=0.8, tooltip=f"{cpe['name']} (H: {cpe['height']}m)").add_to(m)
 
-# UPGRADE: Added strict black text and explicit font styling so dark mode themes don't hide it
 legend_html = """
 <div style="position: absolute; bottom: 50px; left: 10px; width: 140px; background-color: rgba(255, 255, 255, 0.95); border: 1px solid grey; z-index: 9999; font-size: 11px; padding: 6px; border-radius: 4px; color: black !important; font-family: Arial, sans-serif;">
 <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
 """
 for m_idx in range(11, min_mcs_display - 1, -1):
-    color = MCS_COLORS[m_idx]
-    mod = MCS_TABLE[m_idx]['mod']
-    legend_html += f"""<div style="margin-bottom: 2px; line-height: 14px; white-space: nowrap;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
+    legend_html += f"""<div style="margin-bottom: 2px; line-height: 14px; white-space: nowrap;"><i style="background:{MCS_COLORS[m_idx]}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({MCS_TABLE[m_idx]['mod']})</div>"""
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# Removed 'last_clicked' to prevent single clicks from dropping APs! 
-# We now rely exclusively on 'all_drawings' for dropping AP markers.
-map_data = st_folium(m, width=800, height=600, returned_objects=["all_drawings", "bounds", "center", "zoom"])
+# SMART KEY: This locks the map toolbar from freezing, only refreshing when map_refresh increments!
+map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings", "center", "zoom"], key=f"locked_map_{st.session_state.map_refresh}")
 
 # --- 4. Handle Map Events ---
 if map_data:
-    if map_data.get("bounds"):
-        st.session_state.map_bounds = map_data["bounds"]
     if map_data.get("center"):
         st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
     if map_data.get("zoom"):
         st.session_state.map_zoom = map_data["zoom"]
 
-    if map_data.get("all_drawings"):
-        st.session_state.all_drawings = map_data["all_drawings"]
+    if map_data.get("all_drawings") is not None:
+        current_drawings = map_data["all_drawings"]
+        st.session_state.all_drawings = current_drawings
         
-        # UPGRADE: Intercept AP drops! If the user just drew a Point (Marker), drop an AP and clear it.
-        latest_drawing = map_data["all_drawings"][-1]
-        if latest_drawing["geometry"]["type"] == "Point":
-            lon, lat = latest_drawing["geometry"]["coordinates"]
+        # Intercept Marker Drop: Add AP, clear drawing tool, reset map to remove the temporary drawn pin
+        if current_drawings and current_drawings[-1]["geometry"]["type"] == "Point":
+            lon, lat = current_drawings[-1]["geometry"]["coordinates"]
             add_ap(lat, lon)
-            
-            # Clear drawing state so it doesn't loop, map redraws with permanent AP
-            st.session_state.all_drawings = None 
+            st.session_state.all_drawings = []
+            st.session_state.map_refresh += 1
             st.rerun()
