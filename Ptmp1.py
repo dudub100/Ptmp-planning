@@ -118,7 +118,6 @@ if 'ap_counter' not in st.session_state:
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
     
-# NEW: Track map zoom and center to preserve user view
 if 'map_center' not in st.session_state:
     st.session_state.map_center = None
 if 'map_zoom' not in st.session_state:
@@ -240,7 +239,6 @@ with st.sidebar:
 
 
 # --- 3. Map Generation ---
-# Determine where to center the map based on user's last interaction
 if st.session_state.map_center:
     start_loc = st.session_state.map_center
     zoom_start = st.session_state.map_zoom
@@ -251,7 +249,6 @@ else:
     start_loc = [32.1750, 34.9069]
     zoom_start = 13
 
-# Add control_scale=True to display the scale bar
 m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
 
 for ap in st.session_state.aps:
@@ -287,7 +284,7 @@ for ap in st.session_state.aps:
                 stroke=False, 
                 fill=True,
                 fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.1, # Drastically lowered to keep the map visible through overlapping layers
+                fill_opacity=0.15, # Adjusted to 0.15 as requested
                 tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
             ).add_to(m)
             
@@ -295,8 +292,8 @@ for ap in st.session_state.aps:
         folium.PolyLine(
             locations=largest_polygon,
             color='black',
-            weight=2,
-            opacity=0.8
+            weight=1,   # Made the line thinner (was 2)
+            opacity=0.4 # Made the line more transparent (was 0.8)
         ).add_to(m)
         
         start_angle = end_angle
@@ -312,12 +309,10 @@ map_data = st_folium(m, width=800, height=600)
 
 # --- 4. Handle Map State and Clicks ---
 if map_data:
-    # Always keep the session state updated with the user's current zoom/pan
     if map_data.get("center"):
         st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
         st.session_state.map_zoom = map_data["zoom"]
         
-    # If the user actually clicked to add an AP
     if map_data.get("last_clicked"):
         clicked_lat = map_data["last_clicked"]["lat"]
         clicked_lon = map_data["last_clicked"]["lng"]
