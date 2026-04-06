@@ -8,7 +8,7 @@ import json
 import os
 import requests
 
-# --- Step 2: Wi-Fi 7 MCS Data Table ---
+# --- Constants & Data Tables ---
 MCS_TABLE = [
     {"mcs": 0,  "mod": "BPSK",     "snr": 2,  "caps": {40: 16.25,  80: 34.03,  160: 68.06,   320: 136.11}},
     {"mcs": 1,  "mod": "QPSK",     "snr": 5,  "caps": {40: 32.50,  80: 68.06,  160: 136.11,  320: 272.22}},
@@ -30,9 +30,26 @@ MCS_COLORS = {
     8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
-# --- OSM Building Detection ---
+# --- Data Persistence ---
+DATA_FILE = "ptmp_save.json"
+
+def load_all_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            try:
+                save_dict = json.load(f)
+                return save_dict.get("aps", []), save_dict.get("cpes", [])
+            except:
+                return [], []
+    return [], []
+
+def save_all_data():
+    save_dict = {"aps": st.session_state.aps, "cpes": st.session_state.cpes}
+    with open(DATA_FILE, "w") as f:
+        json.dump(save_dict, f)
+
+# --- Building Detection ---
 def fetch_buildings_from_osm(south, west, north, east):
-    """Fetches building footprints within the bounding box."""
     overpass_url = "http://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json][timeout:25];
@@ -43,90 +60,53 @@ def fetch_buildings_from_osm(south, west, north, east):
     out center;
     """
     try:
-        response = requests.get(overpass_url, params={'data': overpass_query})
+        # ADDED USER AGENT: OpenStreetMap blocks anonymous Python requests!
+        headers = {'User-Agent': 'PtMP-Planner-App/1.0'}
+        response = requests.get(overpass_url, params={'data': overpass_query}, headers=headers)
+        response.raise_for_status() # Throws an error if API rejects us
         data = response.json()
         return data.get('elements', [])
-    except:
-        return []
+    except Exception as e:
+        return str(e) # Return the actual error message so we can show it on screen
 
-# --- Data Persistence ---
-DATA_FILE = "ap_data.json"
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            try:
-                data = json.load(f)
-                # Handle old save files that were just lists of APs
-                if isinstance(data, list):
-                    return data, []
-                return data.get("aps", []), data.get("cpes", [])
-            except json.JSONDecodeError:
-                return [], []
-    return [], []
-
-def save_data():
-    with open(DATA_FILE, "w") as f:
-        json.dump({"aps": st.session_state.aps, "cpes": st.session_state.cpes}, f)
-
-# --- Link Budget & ITU-R Math ---
+# --- Link Budget Math ---
 @st.cache_data
 def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_figure, channel_bw, availability):
     radii_results = {}
     bw_hz = channel_bw * 1e6
     noise_floor_dbm = -174 + (10 * math.log10(bw_hz)) + noise_figure
-    
     f = f_GHz * u.GHz
     T = 15 * u.deg_C
     P = 1013 * u.hPa
     rho = 7.5 * u.g / u.m**3
-    
     gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
     gamma_g = gamma_g_qty.value 
-    
     p = 100.0 - availability 
     R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
     gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
     gamma_r = gamma_r_qty.value
-    
     for mcs_index in range(12): 
         mcs_data = MCS_TABLE[mcs_index]
         rx_threshold = noise_floor_dbm + mcs_data["snr"]
-        
-        min_d_km = 0.01
-        max_d_km = 50.0  
-        best_d_km = min_d_km
-        
+        min_d_km, max_d_km, best_d_km = 0.01, 50.0, 0.01
         for _ in range(40): 
             mid_d = (min_d_km + max_d_km) / 2.0
             fspl = 20 * math.log10(mid_d) + 20 * math.log10(f_GHz) + 92.45
             total_loss = fspl + (gamma_g * mid_d) + (gamma_r * mid_d)
             rx_power = tx_power + tx_gain + rx_gain - total_loss
-            
             if rx_power >= rx_threshold:
                 min_d_km = mid_d
                 best_d_km = mid_d
             else:
                 max_d_km = mid_d
-                
-        radii_results[mcs_index] = {
-            "radius_m": best_d_km * 1000.0,
-            "capacity": mcs_data["caps"].get(channel_bw, 0),
-            "mod": mcs_data["mod"]
-        }
-        
+        radii_results[mcs_index] = {"radius_m": best_d_km * 1000.0, "capacity": mcs_data["caps"].get(channel_bw, 0)}
     return radii_results
 
 def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     R = 6378137
-    lat_rad = math.radians(lat)
-    lon_rad = math.radians(lon)
+    lat_rad, lon_rad = math.radians(lat), math.radians(lon)
     points = [(lat, lon)]
-    step = 5
-    angles = list(range(int(start_angle), int(end_angle), step))
-    if angles[-1] != end_angle:
-        angles.append(end_angle)
-    for angle in angles:
+    for angle in range(int(start_angle), int(end_angle) + 1, 5):
         bearing = math.radians(angle)
         lat_out = math.asin(math.sin(lat_rad) * math.cos(radius_m / R) + math.cos(lat_rad) * math.sin(radius_m / R) * math.cos(bearing))
         lon_out = lon_rad + math.atan2(math.sin(bearing) * math.sin(radius_m / R) * math.cos(lat_rad), math.cos(radius_m / R) - math.sin(lat_rad) * math.sin(lat_out))
@@ -134,203 +114,149 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     points.append((lat, lon))
     return points
 
-# --- 1. Session State Initialization ---
+# --- 1. Session State Init ---
 if 'aps' not in st.session_state or 'cpes' not in st.session_state:
-    loaded_aps, loaded_cpes = load_data()
-    st.session_state.aps = loaded_aps
-    st.session_state.cpes = loaded_cpes
-    
+    st.session_state.aps, st.session_state.cpes = load_all_data()
 if 'ap_counter' not in st.session_state:
-    st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
+    st.session_state.ap_counter = len(st.session_state.aps) + 1
 if 'cpe_counter' not in st.session_state:
-    st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
-    
-if 'last_clicked' not in st.session_state:
-    st.session_state.last_clicked = None
+    st.session_state.cpe_counter = len(st.session_state.cpes) + 1
 if 'map_bounds' not in st.session_state:
     st.session_state.map_bounds = None
+if 'last_clicked' not in st.session_state:
+    st.session_state.last_clicked = None
 if 'map_center' not in st.session_state:
     st.session_state.map_center = None
 if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = 13
+    st.session_state.map_zoom = 15 # Zoomed in tighter by default to help OSM
 
-def add_ap(lat, lon, name=None):
-    if name is None:
-        name = f"AP {st.session_state.ap_counter}"
-        st.session_state.ap_counter += 1
-    
-    beam_width = 60
-    num_channels_reuse = max(1, int(120 / beam_width)) 
-    default_sectors = [{"id": i+1, "channel": (i % num_channels_reuse) + 1} for i in range(6)]
-        
+def add_ap(lat, lon):
+    name = f"AP {st.session_state.ap_counter}"
+    st.session_state.ap_counter += 1
     st.session_state.aps.append({
-        "name": name,
-        "lat": round(float(lat), 6),
-        "lon": round(float(lon), 6),
-        "height": 10.0,
-        "tx_power": 23.0,
-        "antenna_gain": 20.0,
-        "channel_bw": 80,    
-        "num_sectors": 6,
-        "beam_width": beam_width,
-        "sectors": default_sectors
+        "name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "height": 10.0,
+        "tx_power": 23.0, "antenna_gain": 20.0, "channel_bw": 80, "num_sectors": 6, "beam_width": 60,
+        "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
     })
-    save_data()
+    save_all_data()
 
-# --- 2. Main UI & Sidebar ---
-st.set_page_config(page_title="PtMP Planner", layout="wide")
+# --- 2. Sidebar UI ---
+st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
-    availability_target = st.number_input("Availability Target (%)", value=99.9, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
+    availability_target = st.number_input("Availability Target (%)", value=99.9, format="%.3f")
     
     min_mcs_display = st.selectbox(
-        "Minimum Displayed MCS", 
-        options=list(range(12)), 
-        index=0, 
+        "Min MCS to Display", 
+        options=range(12), 
+        index=0,
         format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})"
     )
     
-    col_cpe1, col_cpe2 = st.columns(2)
-    cpe_gain = col_cpe1.number_input("CPE Gain (dBi)", value=15.0, step=1.0)
-    cpe_nf = col_cpe2.number_input("CPE Noise Fig (dB)", value=7.0, step=0.5) 
-    
-    st.divider()
-    st.header("CPE Discovery")
-    
-    max_buildings = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
-    
-    if st.button("🏗️ Detect Buildings (Visible Map)"):
-        if st.session_state.map_bounds:
-            b = st.session_state.map_bounds
-            buildings = fetch_buildings_from_osm(b['_southWest']['lat'], b['_southWest']['lng'], b['_northEast']['lat'], b['_northEast']['lng'])
-            
-            added_count = 0
-            limit_hit = False
-            
-            for bldg in buildings:
-                if added_count >= max_buildings:
-                    limit_hit = True
-                    break
-                    
-                tags = bldg.get('tags', {})
-                center = bldg.get('center', {})
-                if not center: 
-                    continue
-                
-                # Height Extraction Logic
-                h = tags.get('height')
-                if h:
-                    try: h = float(h.split()[0]) # Extracts '15' from '15 m'
-                    except: h = 8.0
-                elif tags.get('building:levels'):
-                    try: h = float(tags.get('building:levels')) * 3.5
-                    except: h = 8.0
-                else:
-                    h = 8.0 # Safe default
-                
-                st.session_state.cpes.append({
-                    "name": f"CPE {st.session_state.cpe_counter}",
-                    "lat": center['lat'],
-                    "lon": center['lon'],
-                    "height": h
-                })
-                st.session_state.cpe_counter += 1
-                added_count += 1
-                
-            save_data()
-            if limit_hit:
-                st.warning(f"Detection limit reached! Added {added_count} buildings.")
-            else:
-                st.success(f"Successfully added {added_count} buildings!")
-            st.rerun()
-        else:
-            st.warning("Move the map slightly first so it knows what area is visible.")
+    cpe_gain = st.number_input("Global CPE Gain (dBi)", value=15.0)
+    cpe_nf = st.number_input("CPE Noise Fig (dB)", value=7.0)
 
     st.divider()
-    st.header("AP Management")
-    with st.expander("➕ Add AP Manually"):
-        man_lat = st.number_input("Latitude", value=32.1750, format="%.6f")
-        man_lon = st.number_input("Longitude", value=34.9069, format="%.6f")
-        if st.button("Add to Map"):
-            add_ap(man_lat, man_lon)
-            st.rerun()
-            
-    st.divider()
-    st.subheader("Existing Elements")
+    st.header("CPE Discovery")
+    max_cpes_to_detect = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
     
-    # CPE Manager Expander
+    if st.button("🏗️ Detect Buildings (Visible Map)"):
+        if not st.session_state.map_bounds:
+            st.warning("Please pan or zoom the map slightly to register the viewport before scanning.")
+        else:
+            # ADDED: Spinner to give UI feedback while waiting for API!
+            with st.spinner("Scanning map area for buildings... (this may take a few seconds)"):
+                b = st.session_state.map_bounds
+                
+                # Safely extract bounds (handles different versions of folium bounds data structures)
+                sw_lat = b['_southWest']['lat'] if isinstance(b['_southWest'], dict) else b['_southWest'][0]
+                sw_lng = b['_southWest']['lng'] if isinstance(b['_southWest'], dict) else b['_southWest'][1]
+                ne_lat = b['_northEast']['lat'] if isinstance(b['_northEast'], dict) else b['_northEast'][0]
+                ne_lng = b['_northEast']['lng'] if isinstance(b['_northEast'], dict) else b['_northEast'][1]
+
+                buildings = fetch_buildings_from_osm(sw_lat, sw_lng, ne_lat, ne_lng)
+                
+                if isinstance(buildings, str):
+                    st.error(f"API Error: {buildings}")
+                elif len(buildings) == 0:
+                    st.warning("No buildings found in this view. Try zooming in to a city block!")
+                else:
+                    new_cpes = 0
+                    limit_reached = False
+                    
+                    for bldg in buildings:
+                        if new_cpes >= max_cpes_to_detect:
+                            limit_reached = True
+                            break
+                            
+                        tags = bldg.get('tags', {})
+                        center = bldg.get('center', {})
+                        if not center: continue
+                        
+                        h = tags.get('height')
+                        if h:
+                            try: h = float(h.split()[0])
+                            except: h = 8.0
+                        elif tags.get('building:levels'):
+                            try: h = float(tags.get('building:levels')) * 3.5
+                            except: h = 8.0
+                        else:
+                            h = 8.0
+                        
+                        st.session_state.cpes.append({
+                            "name": f"CPE {st.session_state.cpe_counter}",
+                            "lat": center['lat'], "lon": center['lon'], "height": h
+                        })
+                        st.session_state.cpe_counter += 1
+                        new_cpes += 1
+                    
+                    save_all_data()
+                    if limit_reached:
+                        st.warning(f"Detection limit reached! Added {new_cpes} buildings.")
+                    else:
+                        st.success(f"Added {new_cpes} buildings as CPEs!")
+                    st.rerun()
+
+    st.divider()
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
         if st.session_state.cpes:
             if st.button("🗑️ Clear All CPEs", type="primary"):
                 st.session_state.cpes = []
                 st.session_state.cpe_counter = 1
-                save_data()
+                save_all_data()
                 st.rerun()
                 
         for i, cpe in enumerate(st.session_state.cpes):
-            col1, col2, col3 = st.columns([4, 3, 2])
-            st.session_state.cpes[i]["name"] = col1.text_input("Name", value=cpe["name"], key=f"cpe_n_{i}", label_visibility="collapsed")
-            st.session_state.cpes[i]["height"] = col2.number_input("H (m)", value=float(cpe["height"]), key=f"cpe_h_{i}", label_visibility="collapsed")
-            if col3.button("🗑️", key=f"del_cpe_{i}"):
+            col_cn, col_cd = st.columns([3, 1])
+            st.session_state.cpes[i]["name"] = col_cn.text_input(f"Name", value=cpe["name"], key=f"cpe_n_{i}", label_visibility="collapsed")
+            st.session_state.cpes[i]["height"] = col_cn.number_input(f"H (m)", value=float(cpe["height"]), key=f"cpe_h_{i}", label_visibility="collapsed")
+            if col_cd.button("🗑️", key=f"cpe_del_{i}"):
                 st.session_state.cpes.pop(i)
-                save_data()
+                save_all_data()
                 st.rerun()
 
-    # AP Manager Expander
+    st.divider()
     with st.expander(f"📡 Managed APs ({len(st.session_state.aps)})"):
         for i, ap in enumerate(st.session_state.aps):
             if "channel_bw" not in ap:
                 ap["channel_bw"] = 80
-                
-            st.markdown(f"**{ap['name']}**")
-            st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}")
+            st.markdown(f"**{ap['name']}**")    
+            st.session_state.aps[i]["name"] = st.text_input(f"Name", value=ap["name"], key=f"ap_n_{i}", label_visibility="collapsed")
             
             col1, col2 = st.columns(2)
-            st.session_state.aps[i]["lat"] = col1.number_input("Latitude", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
-            st.session_state.aps[i]["lon"] = col2.number_input("Longitude", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
+            st.session_state.aps[i]["lat"] = col1.number_input("Lat", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
+            st.session_state.aps[i]["lon"] = col2.number_input("Lon", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
             
-            col_h, col_bw = st.columns(2)
-            st.session_state.aps[i]["height"] = col_h.number_input("Height (m)", value=float(ap["height"]), step=1.0, key=f"h_{i}")
-            st.session_state.aps[i]["channel_bw"] = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
-            
-            st.markdown("**RF Parameters**")
-            col3, col4 = st.columns(2)
-            st.session_state.aps[i]["tx_power"] = col3.number_input("Tx Power (dBm)", value=float(ap["tx_power"]), step=1.0, key=f"tx_{i}")
-            st.session_state.aps[i]["antenna_gain"] = col4.number_input("Ant. Gain (dBi)", value=float(ap["antenna_gain"]), step=1.0, key=f"gain_{i}")
-            st.session_state.aps[i]["num_sectors"] = col3.number_input("Sectors", value=int(ap["num_sectors"]), min_value=1, step=1, key=f"numsec_{i}")
-            st.session_state.aps[i]["beam_width"] = col4.number_input("Beam Width (°)", value=int(ap["beam_width"]), min_value=1, step=1, key=f"bw_{i}")
-            
-            current_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
-            if st.session_state.aps[i]["num_sectors"] > len(current_sectors):
-                num_channels_reuse = max(1, int(120 / st.session_state.aps[i]["beam_width"]))
-                for s_idx in range(len(current_sectors), st.session_state.aps[i]["num_sectors"]):
-                    current_sectors.append({"id": s_idx + 1, "channel": (s_idx % num_channels_reuse) + 1})
-            elif st.session_state.aps[i]["num_sectors"] < len(current_sectors):
-                current_sectors = current_sectors[:st.session_state.aps[i]["num_sectors"]]
-            
-            st.markdown("**Sector Channels**")
-            updated_sectors = []
-            sec_cols = st.columns(3)
-            for s_idx, sector in enumerate(current_sectors):
-                with sec_cols[s_idx % 3]:
-                    new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=int(sector["channel"]), step=1, key=f"ch_{i}_{s_idx}")
-                    updated_sectors.append({"id": s_idx + 1, "channel": new_ch})
-            
-            st.session_state.aps[i]["sectors"] = updated_sectors
-            
-            if st.button("🗑️ Delete AP", type="primary", key=f"del_ap_{i}"):
+            if st.button("🗑️ Delete", type="primary", key=f"ap_del_{i}"):
                 st.session_state.aps.pop(i)
-                save_data()
+                save_all_data()
                 st.rerun()
             st.divider()
 
-    save_data()
-
 # --- 3. Clean Map Generation ---
-# Determine map view to prevent snap-back when refreshing
 if st.session_state.map_center:
     start_loc = st.session_state.map_center
 elif st.session_state.aps:
@@ -340,110 +266,51 @@ else:
 
 m = folium.Map(location=start_loc, zoom_start=st.session_state.map_zoom, control_scale=True)
 
-# Draw APs and Heatmap
 for ap in st.session_state.aps:
-    mcs_data = calculate_all_mcs_radii(
-        ap["lat"], ap["lon"], global_freq, 
-        ap["tx_power"], ap["antenna_gain"], 
-        cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
-    )
+    radii_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap["channel_bw"], availability_target)
     
-    for mcs_level in range(12):
-        if mcs_level < min_mcs_display:
-            continue
-            
-        data = mcs_data[mcs_level]
-        folium.Circle(
-            location=[ap["lat"], ap["lon"]],
-            radius=data['radius_m'],
-            color=MCS_COLORS[mcs_level],
-            weight=1,
-            fill=False,
-            dash_array='3, 4',
-        ).add_to(m)
-
-    start_angle = 0 
-    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
-    
-    for idx, sector in enumerate(sorted_sectors):
+    start_angle = 0
+    for sector in sorted(ap["sectors"], key=lambda x: x["id"]):
         end_angle = start_angle + ap["beam_width"]
         
-        for mcs_level in range(12):
-            if mcs_level < min_mcs_display:
-                continue 
-                
-            data = mcs_data[mcs_level]
-            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
-            
-            folium.Polygon(
-                locations=polygon_points,
-                stroke=False, 
-                fill=True,
-                fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.15,
-                tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
-            ).add_to(m)
-            
-        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[min_mcs_display]['radius_m'], start_angle, end_angle)
-        folium.PolyLine(
-            locations=largest_polygon,
-            color='black',
-            weight=1,
-            opacity=0.4
-        ).add_to(m)
+        for m_idx in range(min_mcs_display, 12):
+            poly = get_sector_polygon(ap["lat"], ap["lon"], radii_data[m_idx]["radius_m"], start_angle, end_angle)
+            folium.Polygon(locations=poly, stroke=False, fill=True, fill_color=MCS_COLORS[m_idx], fill_opacity=0.15).add_to(m)
         
+        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], radii_data[min_mcs_display]['radius_m'], start_angle, end_angle)
+        folium.PolyLine(locations=largest_polygon, color='black', weight=1, opacity=0.4).add_to(m)
         start_angle = end_angle
+        
+    folium.Marker([ap["lat"], ap["lon"]], tooltip=ap["name"], icon=folium.Icon(color="black", icon="wifi", prefix="fa")).add_to(m)
 
-    folium.Marker(
-        [ap["lat"], ap["lon"]],
-        popup=f"{ap['name']} ({global_freq}GHz)",
-        tooltip=ap["name"],
-        icon=folium.Icon(color="black", icon="wifi", prefix="fa")
-    ).add_to(m)
-
-# Draw CPEs
 for cpe in st.session_state.cpes:
     folium.CircleMarker(
-        location=[cpe["lat"], cpe["lon"]],
-        radius=4,
-        color="blue",
-        fill=True,
-        fill_color="blue",
+        location=[cpe["lat"], cpe["lon"]], radius=4, color="blue", fill=True, fill_opacity=1.0, 
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
 
-# Custom Legend Injection
-legend_html = """
-<div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
-<div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
-"""
-for m_idx in range(11, min_mcs_display - 1, -1):
-    color = MCS_COLORS[m_idx]
-    mod = MCS_TABLE[m_idx]['mod']
-    legend_html += f"""<div style="margin-bottom: 2px; line-height: 12px;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
+legend_html = """<div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background: white; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px; border: 1px solid grey;"><div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>"""
+for m_idx in range(11, min_mcs_display-1, -1):
+    legend_html += f"""<div style="margin-bottom: 2px;"><i style="background:{MCS_COLORS[m_idx]}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777;"></i>MCS {m_idx}</div>"""
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# Ensure returned_objects extracts everything we need
 map_data = st_folium(m, width=1000, height=600, returned_objects=["last_clicked", "bounds", "center", "zoom"])
 
-# --- 4. Handle Map Events ---
+# --- 4. Logic ---
 if map_data:
-    # Update current viewport so fetching buildings works and map doesn't snap back
     if map_data.get("bounds"):
         st.session_state.map_bounds = map_data["bounds"]
     if map_data.get("center"):
         st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
     if map_data.get("zoom"):
         st.session_state.map_zoom = map_data["zoom"]
-
-    # Handle Clicks
-    if map_data.get("last_clicked"):
-        clicked_lat = round(map_data["last_clicked"]["lat"], 6)
-        clicked_lon = round(map_data["last_clicked"]["lng"], 6)
         
-        current_click = (clicked_lat, clicked_lon)
-        if st.session_state.last_clicked != current_click:
-            st.session_state.last_clicked = current_click
-            add_ap(clicked_lat, clicked_lon)
-            st.rerun()
+    if map_data.get("last_clicked"):
+        cl = map_data["last_clicked"]
+        if cl is not None:
+            curr = (round(cl['lat'], 6), round(cl['lng'], 6))
+            if st.session_state.last_clicked != curr:
+                st.session_state.last_clicked = curr
+                add_ap(curr[0], curr[1])
+                st.rerun()
