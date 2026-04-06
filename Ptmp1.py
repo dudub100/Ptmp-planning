@@ -30,14 +30,19 @@ MCS_COLORS = {
     8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
-# --- Data Persistence ---
+# --- Data Persistence (Bulletproof) ---
 DATA_FILE = "ap_data.json"
 CPE_FILE = "cpe_data.json"
 
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
-            try: return json.load(f)
+            try: 
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data.get("aps", [])
+                elif isinstance(data, list):
+                    return data
             except: pass
     return []
 
@@ -48,7 +53,12 @@ def save_data():
 def load_cpes():
     if os.path.exists(CPE_FILE):
         with open(CPE_FILE, "r") as f:
-            try: return json.load(f)
+            try: 
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data.get("cpes", [])
+                elif isinstance(data, list):
+                    return data
             except: pass
     return []
 
@@ -68,7 +78,6 @@ def fetch_buildings_from_osm(south, west, north, east):
     out center;
     """
     try:
-        # User-Agent is required, otherwise OSM blocks the request
         headers = {'User-Agent': 'PtMP-Planner/1.0'}
         response = requests.get(overpass_url, params={'data': overpass_query}, headers=headers)
         if response.status_code == 200:
@@ -157,12 +166,10 @@ if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
 if 'map_bounds' not in st.session_state:
     st.session_state.map_bounds = None
-    
-# We track map center/zoom so the map doesn't snap back when you click "Detect Buildings"
 if 'map_center' not in st.session_state:
     st.session_state.map_center = None
 if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = 13
+    st.session_state.map_zoom = 14
 
 def add_ap(lat, lon, name=None):
     if name is None:
@@ -188,7 +195,7 @@ def add_ap(lat, lon, name=None):
     save_data()
 
 # --- 2. Main UI & Sidebar ---
-st.set_page_config(page_title="PtMP Planner", layout="wide")
+st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
@@ -209,19 +216,20 @@ with st.sidebar:
     
     st.divider()
     
-    # --- NEW: CPE Discovery Section ---
+    # --- CPE Discovery Section ---
     st.header("CPE Discovery")
     max_cpe_detect = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
     
     if st.button("🏗️ Detect Buildings (Visible Map)"):
         if st.session_state.map_bounds:
-            with st.spinner("Fetching buildings..."):
+            with st.spinner("Scanning OpenStreetMap for buildings..."):
                 b = st.session_state.map_bounds
-                # Safely extract coordinates depending on folium version
-                sw_lat = b['_southWest']['lat'] if isinstance(b['_southWest'], dict) else b[0][0]
-                sw_lng = b['_southWest']['lng'] if isinstance(b['_southWest'], dict) else b[0][1]
-                ne_lat = b['_northEast']['lat'] if isinstance(b['_northEast'], dict) else b[1][0]
-                ne_lng = b['_northEast']['lng'] if isinstance(b['_northEast'], dict) else b[1][1]
+                
+                # Robust extraction of map bounds
+                sw_lat = b['_southWest']['lat'] if '_southWest' in b else b[0][0]
+                sw_lng = b['_southWest']['lng'] if '_southWest' in b else b[0][1]
+                ne_lat = b['_northEast']['lat'] if '_northEast' in b else b[1][0]
+                ne_lng = b['_northEast']['lng'] if '_northEast' in b else b[1][1]
 
                 buildings = fetch_buildings_from_osm(sw_lat, sw_lng, ne_lat, ne_lng)
                 
@@ -259,7 +267,7 @@ with st.sidebar:
                 st.success(f"Added {added_count} buildings!")
                 st.rerun()
         else:
-            st.warning("Please pan or zoom the map first to register the view.")
+            st.warning("Please pan or zoom the map slightly to register the view.")
 
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
         if st.session_state.cpes:
@@ -272,7 +280,7 @@ with st.sidebar:
         for i, cpe in enumerate(st.session_state.cpes):
             col_a, col_b, col_c = st.columns([3, 2, 1])
             st.session_state.cpes[i]["name"] = col_a.text_input("Name", value=cpe["name"], key=f"c_n_{i}", label_visibility="collapsed")
-            st.session_state.cpes[i]["height"] = col_b.number_input("H", value=float(cpe["height"]), key=f"c_h_{i}", label_visibility="collapsed")
+            st.session_state.cpes[i]["height"] = col_b.number_input("H (m)", value=float(cpe["height"]), key=f"c_h_{i}", label_visibility="collapsed")
             if col_c.button("X", key=f"c_d_{i}"):
                 st.session_state.cpes.pop(i)
                 save_cpes()
@@ -340,8 +348,7 @@ with st.sidebar:
     save_data()
     save_cpes()
 
-# --- 3. Map Generation ---
-# Use tracked center to prevent snap-back
+# --- 3. Clean Map Generation ---
 if st.session_state.map_center:
     start_loc = st.session_state.map_center
     zoom = st.session_state.map_zoom
@@ -414,7 +421,6 @@ for ap in st.session_state.aps:
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
 
-# --- NEW: Draw CPEs on map ---
 for cpe in st.session_state.cpes:
     folium.CircleMarker(
         location=[cpe["lat"], cpe["lon"]],
@@ -422,7 +428,7 @@ for cpe in st.session_state.cpes:
         color="blue",
         fill=True,
         fill_color="blue",
-        tooltip=f"{cpe['name']} (Height: {cpe['height']}m)"
+        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
 
 legend_html = """
@@ -436,12 +442,10 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# Added bounds, center, and zoom to returned objects
-map_data = st_folium(m, width=800, height=600, returned_objects=["last_clicked", "bounds", "center", "zoom"])
+map_data = st_folium(m, width=1000, height=600, returned_objects=["last_clicked", "bounds", "center", "zoom"])
 
 # --- 4. Handle Map Events ---
 if map_data:
-    # Continuously update the viewport bounds so detection works
     if map_data.get("bounds"):
         st.session_state.map_bounds = map_data["bounds"]
     if map_data.get("center"):
@@ -449,7 +453,6 @@ if map_data:
     if map_data.get("zoom"):
         st.session_state.map_zoom = map_data["zoom"]
 
-    # Handle Clicks
     if map_data.get("last_clicked"):
         clicked_lat = round(map_data["last_clicked"]["lat"], 6)
         clicked_lon = round(map_data["last_clicked"]["lng"], 6)
