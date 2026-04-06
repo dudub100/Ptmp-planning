@@ -227,7 +227,6 @@ with st.sidebar:
                 st.rerun()
 
 # --- 3. Clean Map Generation ---
-# Determine initial map center
 if st.session_state.aps:
     start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
 elif st.session_state.cpes:
@@ -235,7 +234,6 @@ elif st.session_state.cpes:
 else:
     start_loc = [32.1750, 34.9069]
 
-# Create a fresh map object EVERY time to prevent Streamlit cache corruption
 m = folium.Map(location=start_loc, zoom_start=14, control_scale=True)
 
 for ap in st.session_state.aps:
@@ -273,12 +271,12 @@ for m_idx in range(11, min_mcs_display-1, -1):
 legend_html += '</div>'
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# Render map: Only listen for clicks and bounds to completely stop infinite panning loops
+# --- IMPORTANT RENDERING FIX ---
+# Hardcoded width and height, removed dynamic sizing, and removed the broken "key" parameter
 map_data = st_folium(
     m, 
-    use_container_width=True, 
+    width=1000, 
     height=600, 
-    key="map", 
     returned_objects=["last_clicked", "bounds"]
 )
 
@@ -289,8 +287,9 @@ if map_data:
         
     if map_data.get("last_clicked"):
         cl = map_data["last_clicked"]
-        curr = (round(cl['lat'], 6), round(cl['lng'], 6))
-        if st.session_state.last_clicked != curr:
-            st.session_state.last_clicked = curr
-            add_ap(curr[0], curr[1])
-            st.rerun()
+        if cl is not None:
+            curr = (round(cl['lat'], 6), round(cl['lng'], 6))
+            if st.session_state.last_clicked != curr:
+                st.session_state.last_clicked = curr
+                add_ap(curr[0], curr[1])
+                st.rerun()
