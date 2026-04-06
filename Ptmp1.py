@@ -122,6 +122,10 @@ if 'map_bounds' not in st.session_state:
     st.session_state.map_bounds = None
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = None
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = None
 
 def add_ap(lat, lon):
     name = f"AP {st.session_state.ap_counter}"
@@ -155,7 +159,6 @@ with st.sidebar:
     st.divider()
     st.header("CPE Discovery")
     
-    # NEW: Detection Limit Input
     max_cpes_to_detect = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
     
     if st.button("🏗️ Detect Buildings (Visible Map)"):
@@ -167,7 +170,6 @@ with st.sidebar:
             limit_reached = False
             
             for bldg in buildings:
-                # Truncate loop if limit reached
                 if new_cpes >= max_cpes_to_detect:
                     limit_reached = True
                     break
@@ -195,7 +197,7 @@ with st.sidebar:
             
             save_all_data()
             if limit_reached:
-                st.warning(f"Detection limit reached! Added {new_cpes} buildings. Zoom in or increase the limit for more.")
+                st.warning(f"Detection limit reached! Added {new_cpes} buildings.")
             else:
                 st.success(f"Added {new_cpes} buildings as CPEs!")
             st.rerun()
@@ -204,7 +206,6 @@ with st.sidebar:
 
     st.divider()
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
-        # Show button to clear all CPEs
         if st.session_state.cpes:
             if st.button("🗑️ Clear All CPEs", type="primary"):
                 st.session_state.cpes = []
@@ -230,51 +231,90 @@ with st.sidebar:
                 save_all_data()
                 st.rerun()
 
-# --- 3. Map Generation ---
-start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
-m = folium.Map(location=start_loc, zoom_start=15, control_scale=True)
+# --- 3. Map Generation & SMART CACHING ---
+# We hash the parameters to only rebuild the map when necessary
+current_map_state = {
+    "aps": st.session_state.aps,
+    "cpes": st.session_state.cpes,
+    "freq": global_freq,
+    "avail": availability_target,
+    "min_mcs": min_mcs_display,
+    "cpe_gain": cpe_gain,
+    "cpe_nf": cpe_nf
+}
+state_str = json.dumps(current_map_state, sort_keys=True)
 
-for ap in st.session_state.aps:
-    radii_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap["channel_bw"], availability_target)
+rebuild_map = False
+if st.session_state.get("last_map_state_str") != state_str:
+    rebuild_map = True
+    st.session_state.last_map_state_str = state_str
+
+if rebuild_map or "map_obj" not in st.session_state:
+    # Preserve view when rebuilding
+    start_loc = st.session_state.get("map_center")
+    zoom_start = st.session_state.get("map_zoom")
     
-    start_angle = 0
-    for sector in sorted(ap["sectors"], key=lambda x: x["id"]):
-        end_angle = start_angle + ap["beam_width"]
+    if not start_loc:
+        start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
+    if not zoom_start:
+        zoom_start = 14
+
+    m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
+
+    # Draw APs and Heatmaps
+    for ap in st.session_state.aps:
+        radii_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap["channel_bw"], availability_target)
         
-        for m_idx in range(min_mcs_display, 12):
-            poly = get_sector_polygon(ap["lat"], ap["lon"], radii_data[m_idx]["radius_m"], start_angle, end_angle)
-            folium.Polygon(locations=poly, stroke=False, fill=True, fill_color=MCS_COLORS[m_idx], fill_opacity=0.15).add_to(m)
-        
-        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], radii_data[min_mcs_display]['radius_m'], start_angle, end_angle)
-        folium.PolyLine(
-            locations=largest_polygon,
-            color='black',
-            weight=1,
-            opacity=0.4
+        start_angle = 0
+        for sector in sorted(ap["sectors"], key=lambda x: x["id"]):
+            end_angle = start_angle + ap["beam_width"]
+            
+            for m_idx in range(min_mcs_display, 12):
+                poly = get_sector_polygon(ap["lat"], ap["lon"], radii_data[m_idx]["radius_m"], start_angle, end_angle)
+                folium.Polygon(locations=poly, stroke=False, fill=True, fill_color=MCS_COLORS[m_idx], fill_opacity=0.15).add_to(m)
+            
+            largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], radii_data[min_mcs_display]['radius_m'], start_angle, end_angle)
+            folium.PolyLine(
+                locations=largest_polygon, color='black', weight=1, opacity=0.4
+            ).add_to(m)
+            
+            start_angle = end_angle
+            
+        folium.Marker([ap["lat"], ap["lon"]], tooltip=ap["name"], icon=folium.Icon(color="black", icon="tower-broadcast", prefix="fa")).add_to(m)
+
+    # Draw CPEs
+    for cpe in st.session_state.cpes:
+        folium.CircleMarker(
+            [cpe["lat"], cpe["lon"]], radius=4, color="blue", fill=True, 
+            tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
         ).add_to(m)
-        
-        start_angle = end_angle
-        
-    folium.Marker([ap["lat"], ap["lon"]], tooltip=ap["name"], icon=folium.Icon(color="black", icon="tower-broadcast", prefix="fa")).add_to(m)
 
-for cpe in st.session_state.cpes:
-    folium.CircleMarker(
-        [cpe["lat"], cpe["lon"]], radius=4, color="blue", fill=True, 
-        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
-    ).add_to(m)
+    # Custom Legend
+    legend_html = f'<div style="position: absolute; bottom: 50px; left: 10px; width: 110px; background:white; z-index:9999; font-size:10px; padding:6px; border-radius:4px; border:1px solid grey;"><b>Capacity</b><br>'
+    for m_idx in range(11, min_mcs_display-1, -1):
+        legend_html += f'<i style="background:{MCS_COLORS[m_idx]}; width:10px; height:10px; float:left; margin-right:5px; border:1px solid #777;"></i>MCS {m_idx}<br>'
+    legend_html += '</div>'
+    m.get_root().html.add_child(folium.Element(legend_html))
 
-legend_html = f'<div style="position: absolute; bottom: 50px; left: 10px; width: 100px; background:white; z-index:9999; font-size:10px; padding:5px; border-radius:5px; border:1px solid grey;"><b>Capacity</b><br>'
-for m_idx in range(11, min_mcs_display-1, -1):
-    legend_html += f'<i style="background:{MCS_COLORS[m_idx]}; width:10px; height:10px; float:left; margin-right:5px;"></i>MCS {m_idx}<br>'
-legend_html += '</div>'
-m.get_root().html.add_child(folium.Element(legend_html))
+    st.session_state.map_obj = m
 
-map_data = st_folium(m, width=1000, height=600, key="ptmp_map", returned_objects=["last_clicked", "bounds"])
+# --- Render the map using the cached object ---
+map_data = st_folium(
+    st.session_state.map_obj, 
+    width=800, height=600, 
+    key="ptmp_map", 
+    returned_objects=["last_clicked", "bounds", "center", "zoom"]
+)
 
 # --- 4. Logic ---
 if map_data:
+    if map_data.get("center"):
+        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+    if map_data.get("zoom"):
+        st.session_state.map_zoom = map_data["zoom"]
     if map_data.get("bounds"):
         st.session_state.map_bounds = map_data["bounds"]
+        
     if map_data.get("last_clicked"):
         cl = map_data["last_clicked"]
         curr = (round(cl['lat'], 6), round(cl['lng'], 6))
