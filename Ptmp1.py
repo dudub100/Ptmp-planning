@@ -118,11 +118,7 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     R = 6378137
     lat_rad, lon_rad = math.radians(lat), math.radians(lon)
     points = [(lat, lon)]
-    step = 5
-    angles = list(range(int(start_angle), int(end_angle), step))
-    if angles[-1] != end_angle:
-        angles.append(end_angle)
-    for angle in angles:
+    for angle in range(int(start_angle), int(end_angle) + 1, 5):
         bearing = math.radians(angle)
         lat_out = math.asin(math.sin(lat_rad) * math.cos(radius_m / R) + math.cos(lat_rad) * math.sin(radius_m / R) * math.cos(bearing))
         lon_out = lon_rad + math.atan2(math.sin(bearing) * math.sin(radius_m / R) * math.cos(lat_rad), math.cos(radius_m / R) - math.sin(lat_rad) * math.sin(lat_out))
@@ -141,8 +137,8 @@ if 'all_drawings' not in st.session_state: st.session_state.all_drawings = []
 if 'map_center' not in st.session_state: st.session_state.map_center = None
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
 
-# SMART MAP TRIGGER: This safely refreshes the map ONLY when needed to clear drawings
-if 'map_refresh' not in st.session_state: st.session_state.map_refresh = 0
+# This key forces the map to cleanly refresh ONLY when we want to wipe drawings
+if 'map_key' not in st.session_state: st.session_state.map_key = 0
 
 def add_ap(lat, lon):
     name = f"AP {st.session_state.ap_counter}"
@@ -155,7 +151,7 @@ def add_ap(lat, lon):
     save_data()
 
 # --- 2. Main UI & Sidebar ---
-st.set_page_config(page_title="PtMP Planner", layout="wide")
+st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
@@ -181,7 +177,7 @@ with st.sidebar:
     max_cpes = st.number_input("Max Buildings to Detect", value=64, min_value=1, step=10)
     
     if st.button("🏗️ Detect Buildings in Drawn Area"):
-        polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] == "Polygon"]
+        polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] in ["Polygon", "Rectangle"]]
         
         if not polygons:
             st.warning("Please draw a polygon or rectangle on the map first.")
@@ -221,8 +217,15 @@ with st.sidebar:
                         added_count += 1
                         
                     save_cpes()
-                    st.session_state.map_refresh += 1 # Forces map to clear the drawn blue box
+                    
+                    # Center the map perfectly over the newly detected buildings
+                    st.session_state.map_center = [(south + north) / 2, (west + east) / 2]
+                    st.session_state.map_zoom = 16
+                    
+                    # Wipe the blue drawn box from the map since detection is done
                     st.session_state.all_drawings = []
+                    st.session_state.map_key += 1 
+                    
                     st.success(f"Successfully detected {added_count} buildings!")
                     st.rerun()
 
@@ -299,6 +302,11 @@ else:
 
 m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
 
+# THE FIX: If you draw a shape, Python will explicitly keep it on the map so it never vanishes!
+for drawing in st.session_state.all_drawings:
+    if drawing["geometry"]["type"] in ["Polygon", "Rectangle"]:
+        folium.GeoJson(drawing, style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.2}).add_to(m)
+
 Draw(
     export=False,
     draw_options={'polyline': False, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': True, 'circlemarker': False}
@@ -336,24 +344,31 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# SMART KEY: This locks the map toolbar from freezing, only refreshing when map_refresh increments!
-map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings", "center", "zoom"], key=f"locked_map_{st.session_state.map_refresh}")
+# THE FIX: By removing "center" and "zoom" from returned_objects, panning NEVER causes Streamlit to lag or reload!
+map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
 
-# --- 4. Handle Map Events ---
-if map_data:
-    if map_data.get("center"):
-        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
-    if map_data.get("zoom"):
-        st.session_state.map_zoom = map_data["zoom"]
-
-    if map_data.get("all_drawings") is not None:
-        current_drawings = map_data["all_drawings"]
-        st.session_state.all_drawings = current_drawings
+# --- 4. Handle Drawing Events ---
+if map_data and map_data.get("all_drawings") is not None:
+    current_drawings = map_data["all_drawings"]
+    
+    # Process dropping a Marker Point (AP)
+    new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
+    
+    if new_point:
+        # 1. Turn marker into AP
+        lon, lat = new_point["geometry"]["coordinates"]
+        add_ap(lat, lon)
         
-        # Intercept Marker Drop: Add AP, clear drawing tool, reset map to remove the temporary drawn pin
-        if current_drawings and current_drawings[-1]["geometry"]["type"] == "Point":
-            lon, lat = current_drawings[-1]["geometry"]["coordinates"]
-            add_ap(lat, lon)
-            st.session_state.all_drawings = []
-            st.session_state.map_refresh += 1
-            st.rerun()
+        # 2. Intelligent Snap: Focus the map exactly where you dropped the AP
+        st.session_state.map_center = [lat, lon]
+        st.session_state.map_zoom = 15
+        
+        # 3. Wipe the temporary drawing tool marker
+        st.session_state.all_drawings = []
+        st.session_state.map_key += 1
+        st.rerun()
+        
+    elif str(current_drawings) != str(st.session_state.all_drawings):
+        # User drew a square/polygon. Save it into memory so Python can redraw it next frame.
+        st.session_state.all_drawings = current_drawings
+        st.rerun()
