@@ -57,19 +57,20 @@ def save_cpes():
     with open(CPE_FILE, "w") as f:
         json.dump(st.session_state.cpes, f)
 
-# --- Building Detection Function ---
-def fetch_buildings_from_osm(south, west, north, east):
+# --- Building Detection Function (UPGRADED TO EXACT POLYGON) ---
+def fetch_buildings_from_osm_poly(poly_str):
+    """Queries OSM for buildings strictly inside the exact polygon points provided."""
     overpass_url = "http://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json][timeout:25];
     (
-      way["building"]({south},{west},{north},{east});
-      relation["building"]({south},{west},{north},{east});
+      way["building"](poly:"{poly_str}");
+      relation["building"](poly:"{poly_str}");
     );
     out center;
     """
     try:
-        headers = {'User-Agent': 'PtMP-Planner/1.0'}
+        headers = {'User-Agent': 'PtMP-Planner/1.1'}
         response = requests.get(overpass_url, params={'data': overpass_query}, headers=headers)
         if response.status_code == 200:
             return response.json().get('elements', []), None
@@ -136,8 +137,6 @@ if 'cpe_counter' not in st.session_state: st.session_state.cpe_counter = len(st.
 if 'all_drawings' not in st.session_state: st.session_state.all_drawings = []
 if 'map_center' not in st.session_state: st.session_state.map_center = None
 if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
-
-# This key forces the map to cleanly refresh ONLY when we want to wipe drawings
 if 'map_key' not in st.session_state: st.session_state.map_key = 0
 
 def add_ap(lat, lon):
@@ -149,6 +148,16 @@ def add_ap(lat, lon):
         "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
     })
     save_data()
+
+def add_cpe(lat, lon, height=8.0):
+    st.session_state.cpes.append({
+        "name": f"CPE {st.session_state.cpe_counter}", 
+        "lat": round(float(lat), 6), 
+        "lon": round(float(lon), 6), 
+        "height": height
+    })
+    st.session_state.cpe_counter += 1
+    save_cpes()
 
 # --- 2. Main UI & Sidebar ---
 st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
@@ -167,35 +176,37 @@ with st.sidebar:
     )
     
     col_cpe1, col_cpe2 = st.columns(2)
-    cpe_gain = col_cpe1.number_input("CPE Gain (dBi)", value=15.0, step=1.0)
+    cpe_gain = col_cpe1.number_input("Global CPE Gain (dBi)", value=15.0, step=1.0)
     cpe_nf = col_cpe2.number_input("CPE Noise Fig (dB)", value=7.0, step=0.5) 
     
     st.divider()
 
-    st.header("CPE Discovery")
+    st.header("CPE Discovery & Management")
     st.markdown("1. Use the **Polygon/Square Tool** to draw an area.\n2. Click the button below.")
     max_cpes = st.number_input("Max Buildings to Detect", value=64, min_value=1, step=10)
     
-    if st.button("🏗️ Detect Buildings in Drawn Area"):
+    if st.button("🏗️ Detect Buildings in Drawn Area", type="primary", use_container_width=True):
         polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] in ["Polygon", "Rectangle"]]
         
         if not polygons:
             st.warning("Please draw a polygon or rectangle on the map first.")
         else:
-            with st.spinner("Detecting buildings..."):
+            with st.spinner("Detecting buildings precisely inside your drawn shape..."):
                 last_shape = polygons[-1]
                 coords = last_shape["geometry"]["coordinates"][0]
                 
-                lats, lons = [pt[1] for pt in coords], [pt[0] for pt in coords]
-                south, north = min(lats), max(lats)
-                west, east = min(lons), max(lons)
+                # Format coordinates for Overpass 'poly' query: "lat1 lon1 lat2 lon2 ..."
+                poly_str = " ".join([f"{pt[1]} {pt[0]}" for pt in coords])
                 
-                buildings, error = fetch_buildings_from_osm(south, west, north, east)
+                # For centering the map later
+                lats, lons = [pt[1] for pt in coords], [pt[0] for pt in coords]
+                
+                buildings, error = fetch_buildings_from_osm_poly(poly_str)
                 
                 if error:
                     st.error(f"Detection failed. Reason: {error}")
                 elif not buildings:
-                    st.warning("0 buildings found in this specific area.")
+                    st.warning("0 buildings found in this exact shape.")
                 else:
                     added_count = 0
                     for bldg in buildings:
@@ -212,46 +223,57 @@ with st.sidebar:
                             except: h = 8.0
                         else: h = 8.0
                             
-                        st.session_state.cpes.append({"name": f"CPE {st.session_state.cpe_counter}", "lat": center['lat'], "lon": center['lon'], "height": h})
-                        st.session_state.cpe_counter += 1
+                        add_cpe(center['lat'], center['lon'], h)
                         added_count += 1
                         
-                    save_cpes()
-                    
-                    # Center the map perfectly over the newly detected buildings
-                    st.session_state.map_center = [(south + north) / 2, (west + east) / 2]
+                    st.session_state.map_center = [(min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2]
                     st.session_state.map_zoom = 16
-                    
-                    # Wipe the blue drawn box from the map since detection is done
                     st.session_state.all_drawings = []
                     st.session_state.map_key += 1 
                     
-                    st.success(f"Successfully detected {added_count} buildings!")
+                    st.success(f"Successfully detected {added_count} buildings inside the polygon!")
                     st.rerun()
+
+    with st.expander("➕ Add CPE Manually"):
+        m_cpe_lat = st.number_input("CPE Latitude", value=32.1750, format="%.6f", key="m_cpe_lat")
+        m_cpe_lon = st.number_input("CPE Longitude", value=34.9069, format="%.6f", key="m_cpe_lon")
+        m_cpe_h = st.number_input("CPE Height (m)", value=8.0, step=1.0, key="m_cpe_h")
+        if st.button("Add CPE to Map"):
+            add_cpe(m_cpe_lat, m_cpe_lon, m_cpe_h)
+            st.session_state.map_center = [m_cpe_lat, m_cpe_lon]
+            st.session_state.map_key += 1
+            st.rerun()
 
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=True):
         if st.session_state.cpes:
-            if st.button("🗑️ Clear All Buildings", type="primary"):
+            if st.button("🗑️ Clear All Buildings", type="primary", use_container_width=True):
                 st.session_state.cpes, st.session_state.cpe_counter = [], 1
                 save_cpes()
+                st.session_state.map_key += 1
                 st.rerun()
                 
-            edited_cpes = st.data_editor(
-                st.session_state.cpes,
-                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.6f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.6f"), "height": st.column_config.NumberColumn("H (m)")},
-                hide_index=True, num_rows="dynamic", key="cpe_editor"
-            )
-            if json.dumps(edited_cpes) != json.dumps(st.session_state.cpes):
-                st.session_state.cpes = edited_cpes
-                save_cpes()
-                st.rerun()
+            for i, cpe in enumerate(st.session_state.cpes):
+                col_n, col_h, col_del = st.columns([4, 3, 2])
+                new_n = col_n.text_input("Name", value=cpe["name"], key=f"c_n_{i}", label_visibility="collapsed")
+                new_h = col_h.number_input("H (m)", value=float(cpe["height"]), key=f"c_h_{i}", label_visibility="collapsed")
+                
+                # Auto-save changes made in the text boxes
+                if new_n != cpe["name"] or new_h != cpe["height"]:
+                    st.session_state.cpes[i]["name"] = new_n
+                    st.session_state.cpes[i]["height"] = new_h
+                    save_cpes()
+                
+                if col_del.button("🗑️", key=f"c_del_{i}"):
+                    st.session_state.cpes.pop(i)
+                    save_cpes()
+                    st.rerun()
         else:
             st.info("No CPEs added yet.")
                 
     st.divider()
 
     st.header("AP Management")
-    st.markdown("To drop an AP, click the **Marker tool** (📍) on the map toolbar, then click where you want it.")
+    st.markdown("To drop an AP on the map, click the **Marker tool** (📍) on the map toolbar, then click where you want it.")
             
     st.subheader("Existing APs")
     for i, ap in enumerate(st.session_state.aps):
@@ -302,7 +324,6 @@ else:
 
 m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
 
-# THE FIX: If you draw a shape, Python will explicitly keep it on the map so it never vanishes!
 for drawing in st.session_state.all_drawings:
     if drawing["geometry"]["type"] in ["Polygon", "Rectangle"]:
         folium.GeoJson(drawing, style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.2}).add_to(m)
@@ -344,31 +365,29 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# THE FIX: By removing "center" and "zoom" from returned_objects, panning NEVER causes Streamlit to lag or reload!
-map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
+map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings", "center", "zoom"], key=f"ptmp_map_{st.session_state.map_key}")
 
 # --- 4. Handle Drawing Events ---
-if map_data and map_data.get("all_drawings") is not None:
-    current_drawings = map_data["all_drawings"]
-    
-    # Process dropping a Marker Point (AP)
-    new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
-    
-    if new_point:
-        # 1. Turn marker into AP
-        lon, lat = new_point["geometry"]["coordinates"]
-        add_ap(lat, lon)
+if map_data:
+    if map_data.get("center"):
+        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+    if map_data.get("zoom"):
+        st.session_state.map_zoom = map_data["zoom"]
+
+    if map_data.get("all_drawings") is not None:
+        current_drawings = map_data["all_drawings"]
         
-        # 2. Intelligent Snap: Focus the map exactly where you dropped the AP
-        st.session_state.map_center = [lat, lon]
-        st.session_state.map_zoom = 15
+        new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
         
-        # 3. Wipe the temporary drawing tool marker
-        st.session_state.all_drawings = []
-        st.session_state.map_key += 1
-        st.rerun()
-        
-    elif str(current_drawings) != str(st.session_state.all_drawings):
-        # User drew a square/polygon. Save it into memory so Python can redraw it next frame.
-        st.session_state.all_drawings = current_drawings
-        st.rerun()
+        if new_point:
+            lon, lat = new_point["geometry"]["coordinates"]
+            add_ap(lat, lon)
+            st.session_state.map_center = [lat, lon]
+            st.session_state.map_zoom = 15
+            st.session_state.all_drawings = []
+            st.session_state.map_key += 1
+            st.rerun()
+            
+        elif str(current_drawings) != str(st.session_state.all_drawings):
+            st.session_state.all_drawings = current_drawings
+            st.rerun()
