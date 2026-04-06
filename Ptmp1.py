@@ -6,6 +6,7 @@ import itur
 import astropy.units as u
 import json
 import os
+import requests
 
 # --- Step 2: Wi-Fi 7 MCS Data Table ---
 MCS_TABLE = [
@@ -29,6 +30,25 @@ MCS_COLORS = {
     8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
+# --- OSM Building Detection ---
+def fetch_buildings_from_osm(south, west, north, east):
+    """Fetches building footprints within the bounding box."""
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json][timeout:25];
+    (
+      way["building"]({south},{west},{north},{east});
+      relation["building"]({south},{west},{north},{east});
+    );
+    out center;
+    """
+    try:
+        response = requests.get(overpass_url, params={'data': overpass_query})
+        data = response.json()
+        return data.get('elements', [])
+    except:
+        return []
+
 # --- Data Persistence ---
 DATA_FILE = "ap_data.json"
 
@@ -36,14 +56,18 @@ def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             try:
-                return json.load(f)
+                data = json.load(f)
+                # Handle old save files that were just lists of APs
+                if isinstance(data, list):
+                    return data, []
+                return data.get("aps", []), data.get("cpes", [])
             except json.JSONDecodeError:
-                return []
-    return []
+                return [], []
+    return [], []
 
 def save_data():
     with open(DATA_FILE, "w") as f:
-        json.dump(st.session_state.aps, f)
+        json.dump({"aps": st.session_state.aps, "cpes": st.session_state.cpes}, f)
 
 # --- Link Budget & ITU-R Math ---
 @st.cache_data
@@ -111,12 +135,24 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     return points
 
 # --- 1. Session State Initialization ---
-if 'aps' not in st.session_state:
-    st.session_state.aps = load_data() 
+if 'aps' not in st.session_state or 'cpes' not in st.session_state:
+    loaded_aps, loaded_cpes = load_data()
+    st.session_state.aps = loaded_aps
+    st.session_state.cpes = loaded_cpes
+    
 if 'ap_counter' not in st.session_state:
     st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
+if 'cpe_counter' not in st.session_state:
+    st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
+    
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
+if 'map_bounds' not in st.session_state:
+    st.session_state.map_bounds = None
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = None
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = 13
 
 def add_ap(lat, lon, name=None):
     if name is None:
@@ -162,6 +198,58 @@ with st.sidebar:
     cpe_nf = col_cpe2.number_input("CPE Noise Fig (dB)", value=7.0, step=0.5) 
     
     st.divider()
+    st.header("CPE Discovery")
+    
+    max_buildings = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
+    
+    if st.button("🏗️ Detect Buildings (Visible Map)"):
+        if st.session_state.map_bounds:
+            b = st.session_state.map_bounds
+            buildings = fetch_buildings_from_osm(b['_southWest']['lat'], b['_southWest']['lng'], b['_northEast']['lat'], b['_northEast']['lng'])
+            
+            added_count = 0
+            limit_hit = False
+            
+            for bldg in buildings:
+                if added_count >= max_buildings:
+                    limit_hit = True
+                    break
+                    
+                tags = bldg.get('tags', {})
+                center = bldg.get('center', {})
+                if not center: 
+                    continue
+                
+                # Height Extraction Logic
+                h = tags.get('height')
+                if h:
+                    try: h = float(h.split()[0]) # Extracts '15' from '15 m'
+                    except: h = 8.0
+                elif tags.get('building:levels'):
+                    try: h = float(tags.get('building:levels')) * 3.5
+                    except: h = 8.0
+                else:
+                    h = 8.0 # Safe default
+                
+                st.session_state.cpes.append({
+                    "name": f"CPE {st.session_state.cpe_counter}",
+                    "lat": center['lat'],
+                    "lon": center['lon'],
+                    "height": h
+                })
+                st.session_state.cpe_counter += 1
+                added_count += 1
+                
+            save_data()
+            if limit_hit:
+                st.warning(f"Detection limit reached! Added {added_count} buildings.")
+            else:
+                st.success(f"Successfully added {added_count} buildings!")
+            st.rerun()
+        else:
+            st.warning("Move the map slightly first so it knows what area is visible.")
+
+    st.divider()
     st.header("AP Management")
     with st.expander("➕ Add AP Manually"):
         man_lat = st.number_input("Latitude", value=32.1750, format="%.6f")
@@ -171,13 +259,33 @@ with st.sidebar:
             st.rerun()
             
     st.divider()
-    st.subheader("Existing APs")
+    st.subheader("Existing Elements")
     
-    for i, ap in enumerate(st.session_state.aps):
-        if "channel_bw" not in ap:
-            ap["channel_bw"] = 80
-            
-        with st.expander(ap["name"]):
+    # CPE Manager Expander
+    with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
+        if st.session_state.cpes:
+            if st.button("🗑️ Clear All CPEs", type="primary"):
+                st.session_state.cpes = []
+                st.session_state.cpe_counter = 1
+                save_data()
+                st.rerun()
+                
+        for i, cpe in enumerate(st.session_state.cpes):
+            col1, col2, col3 = st.columns([4, 3, 2])
+            st.session_state.cpes[i]["name"] = col1.text_input("Name", value=cpe["name"], key=f"cpe_n_{i}", label_visibility="collapsed")
+            st.session_state.cpes[i]["height"] = col2.number_input("H (m)", value=float(cpe["height"]), key=f"cpe_h_{i}", label_visibility="collapsed")
+            if col3.button("🗑️", key=f"del_cpe_{i}"):
+                st.session_state.cpes.pop(i)
+                save_data()
+                st.rerun()
+
+    # AP Manager Expander
+    with st.expander(f"📡 Managed APs ({len(st.session_state.aps)})"):
+        for i, ap in enumerate(st.session_state.aps):
+            if "channel_bw" not in ap:
+                ap["channel_bw"] = 80
+                
+            st.markdown(f"**{ap['name']}**")
             st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}")
             
             col1, col2 = st.columns(2)
@@ -213,19 +321,26 @@ with st.sidebar:
             
             st.session_state.aps[i]["sectors"] = updated_sectors
             
-            st.divider()
-            if st.button("🗑️ Delete AP", type="primary", key=f"del_{i}"):
+            if st.button("🗑️ Delete AP", type="primary", key=f"del_ap_{i}"):
                 st.session_state.aps.pop(i)
                 save_data()
                 st.rerun()
+            st.divider()
 
     save_data()
 
 # --- 3. Clean Map Generation ---
-start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
+# Determine map view to prevent snap-back when refreshing
+if st.session_state.map_center:
+    start_loc = st.session_state.map_center
+elif st.session_state.aps:
+    start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
+else:
+    start_loc = [32.1750, 34.9069]
 
-m = folium.Map(location=start_loc, zoom_start=13, control_scale=True)
+m = folium.Map(location=start_loc, zoom_start=st.session_state.map_zoom, control_scale=True)
 
+# Draw APs and Heatmap
 for ap in st.session_state.aps:
     mcs_data = calculate_all_mcs_radii(
         ap["lat"], ap["lon"], global_freq, 
@@ -286,6 +401,18 @@ for ap in st.session_state.aps:
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
 
+# Draw CPEs
+for cpe in st.session_state.cpes:
+    folium.CircleMarker(
+        location=[cpe["lat"], cpe["lon"]],
+        radius=4,
+        color="blue",
+        fill=True,
+        fill_color="blue",
+        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
+    ).add_to(m)
+
+# Custom Legend Injection
 legend_html = """
 <div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
 <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
@@ -297,15 +424,26 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-map_data = st_folium(m, width=1000, height=600, returned_objects=["last_clicked"])
+# Ensure returned_objects extracts everything we need
+map_data = st_folium(m, width=1000, height=600, returned_objects=["last_clicked", "bounds", "center", "zoom"])
 
-# --- 4. Handle Map Clicks ---
-if map_data and map_data.get("last_clicked"):
-    clicked_lat = round(map_data["last_clicked"]["lat"], 6)
-    clicked_lon = round(map_data["last_clicked"]["lng"], 6)
-    
-    current_click = (clicked_lat, clicked_lon)
-    if st.session_state.last_clicked != current_click:
-        st.session_state.last_clicked = current_click
-        add_ap(clicked_lat, clicked_lon)
-        st.rerun()
+# --- 4. Handle Map Events ---
+if map_data:
+    # Update current viewport so fetching buildings works and map doesn't snap back
+    if map_data.get("bounds"):
+        st.session_state.map_bounds = map_data["bounds"]
+    if map_data.get("center"):
+        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+    if map_data.get("zoom"):
+        st.session_state.map_zoom = map_data["zoom"]
+
+    # Handle Clicks
+    if map_data.get("last_clicked"):
+        clicked_lat = round(map_data["last_clicked"]["lat"], 6)
+        clicked_lon = round(map_data["last_clicked"]["lng"], 6)
+        
+        current_click = (clicked_lat, clicked_lon)
+        if st.session_state.last_clicked != current_click:
+            st.session_state.last_clicked = current_click
+            add_ap(clicked_lat, clicked_lon)
+            st.rerun()
