@@ -133,8 +133,9 @@ def add_ap(lat, lon, name=None):
         
     st.session_state.aps.append({
         "name": name,
-        "lat": lat,
-        "lon": lon,
+        # FORCE ROUNDING to exactly 6 decimals to stop UI/Map tug-of-war loops
+        "lat": round(float(lat), 6),
+        "lon": round(float(lon), 6),
         "height": 10.0,
         "tx_power": 23.0,
         "antenna_gain": 20.0,
@@ -228,7 +229,6 @@ with st.sidebar:
                 st.rerun()
 
 # --- 3. Map Generation & Smart Caching ---
-# We hash all map settings to detect if a physical rebuild of the map is necessary
 current_map_state = {
     "aps": st.session_state.aps,
     "freq": global_freq,
@@ -243,10 +243,8 @@ if st.session_state.get("last_map_state_str") != state_str:
     rebuild_map = True
     st.session_state.last_map_state_str = state_str
 
-# ONLY recreate the folium map object if RF settings or APs actually changed
 if rebuild_map or "map_obj" not in st.session_state:
     
-    # Grab the exact coordinates the user was last looking at to prevent snap-back
     start_loc = st.session_state.get("map_center")
     zoom_start = st.session_state.get("map_zoom")
     
@@ -322,25 +320,32 @@ if rebuild_map or "map_obj" not in st.session_state:
     legend_html += "</div>"
     
     m.get_root().html.add_child(folium.Element(legend_html))
-    
-    # Save the physical map object to session state
     st.session_state.map_obj = m
 
-# Render the map using the cached object
-map_data = st_folium(st.session_state.map_obj, width=800, height=600, returned_objects=["last_clicked", "center", "zoom"])
+# Added key="ptmp_map" to force component stability
+map_data = st_folium(st.session_state.map_obj, width=800, height=600, key="ptmp_map", returned_objects=["last_clicked", "center", "zoom"])
 
-# --- 4. Handle Map State continuously ---
+# --- 4. Handle Map State Continuously and Safely ---
 if map_data:
-    # Always keep our session variables updated with the exact view the user is looking at
+    # Safely track center (ignore microscopic float changes to break infinite loops)
     if map_data.get("center"):
-        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
-    if map_data.get("zoom"):
-        st.session_state.map_zoom = map_data["zoom"]
+        new_lat = map_data["center"]["lat"]
+        new_lng = map_data["center"]["lng"]
+        old_center = st.session_state.map_center
         
-    # Process explicit clicks to add APs
+        # Only update if the map was actually panned > ~50 meters
+        if old_center is None or abs(old_center[0] - new_lat) > 0.0005 or abs(old_center[1] - new_lng) > 0.0005:
+            st.session_state.map_center = [new_lat, new_lng]
+            
+    if map_data.get("zoom"):
+        if st.session_state.map_zoom != map_data["zoom"]:
+            st.session_state.map_zoom = map_data["zoom"]
+            
+    # Safely handle clicks
     if map_data.get("last_clicked"):
-        clicked_lat = map_data["last_clicked"]["lat"]
-        clicked_lon = map_data["last_clicked"]["lng"]
+        # Pre-round the clicks here to match the 6 decimal tolerance of the UI
+        clicked_lat = round(map_data["last_clicked"]["lat"], 6)
+        clicked_lon = round(map_data["last_clicked"]["lng"], 6)
         
         current_click = (clicked_lat, clicked_lon)
         if st.session_state.last_clicked != current_click:
