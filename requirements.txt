@@ -4,3 +4,4 @@ streamlit-folium
 itur
 astropy
 scipy
+requests
