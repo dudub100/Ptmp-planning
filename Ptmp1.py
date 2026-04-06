@@ -117,10 +117,6 @@ if 'ap_counter' not in st.session_state:
     st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
-if 'map_center' not in st.session_state:
-    st.session_state.map_center = None
-if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = None
 
 def add_ap(lat, lon, name=None):
     if name is None:
@@ -133,7 +129,6 @@ def add_ap(lat, lon, name=None):
         
     st.session_state.aps.append({
         "name": name,
-        # FORCE ROUNDING to exactly 6 decimals to stop UI/Map tug-of-war loops
         "lat": round(float(lat), 6),
         "lon": round(float(lon), 6),
         "height": 10.0,
@@ -171,56 +166,46 @@ with st.sidebar:
     st.divider()
     st.subheader("Existing APs")
     
+    # Direct session state mutation - No manual st.rerun() needed! Streamlit handles it natively.
     for i, ap in enumerate(st.session_state.aps):
         if "channel_bw" not in ap:
             ap["channel_bw"] = 80
             
         with st.expander(ap["name"]):
-            new_name = st.text_input("Name", value=ap["name"], key=f"name_{i}")
+            st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}")
             
             col1, col2 = st.columns(2)
-            new_lat = col1.number_input("Latitude", value=ap["lat"], format="%.6f", key=f"lat_{i}")
-            new_lon = col2.number_input("Longitude", value=ap["lon"], format="%.6f", key=f"lon_{i}")
+            st.session_state.aps[i]["lat"] = col1.number_input("Latitude", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
+            st.session_state.aps[i]["lon"] = col2.number_input("Longitude", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
             
             col_h, col_bw = st.columns(2)
-            new_h = col_h.number_input("Height (m)", value=ap["height"], step=1.0, key=f"h_{i}")
-            new_chan_bw = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
+            st.session_state.aps[i]["height"] = col_h.number_input("Height (m)", value=float(ap["height"]), step=1.0, key=f"h_{i}")
+            st.session_state.aps[i]["channel_bw"] = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
             
             st.markdown("**RF Parameters**")
             col3, col4 = st.columns(2)
-            new_tx = col3.number_input("Tx Power (dBm)", value=ap["tx_power"], step=1.0, key=f"tx_{i}")
-            new_gain = col4.number_input("Ant. Gain (dBi)", value=ap["antenna_gain"], step=1.0, key=f"gain_{i}")
-            new_num_sec = col3.number_input("Sectors", value=ap["num_sectors"], min_value=1, step=1, key=f"numsec_{i}")
-            new_bw = col4.number_input("Beam Width (°)", value=ap["beam_width"], min_value=1, step=1, key=f"bw_{i}")
+            st.session_state.aps[i]["tx_power"] = col3.number_input("Tx Power (dBm)", value=float(ap["tx_power"]), step=1.0, key=f"tx_{i}")
+            st.session_state.aps[i]["antenna_gain"] = col4.number_input("Ant. Gain (dBi)", value=float(ap["antenna_gain"]), step=1.0, key=f"gain_{i}")
+            st.session_state.aps[i]["num_sectors"] = col3.number_input("Sectors", value=int(ap["num_sectors"]), min_value=1, step=1, key=f"numsec_{i}")
+            st.session_state.aps[i]["beam_width"] = col4.number_input("Beam Width (°)", value=int(ap["beam_width"]), min_value=1, step=1, key=f"bw_{i}")
             
             current_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
-            if new_num_sec > len(current_sectors):
-                num_channels_reuse = max(1, int(120 / new_bw))
-                for s_idx in range(len(current_sectors), new_num_sec):
+            if st.session_state.aps[i]["num_sectors"] > len(current_sectors):
+                num_channels_reuse = max(1, int(120 / st.session_state.aps[i]["beam_width"]))
+                for s_idx in range(len(current_sectors), st.session_state.aps[i]["num_sectors"]):
                     current_sectors.append({"id": s_idx + 1, "channel": (s_idx % num_channels_reuse) + 1})
-            elif new_num_sec < len(current_sectors):
-                current_sectors = current_sectors[:new_num_sec]
+            elif st.session_state.aps[i]["num_sectors"] < len(current_sectors):
+                current_sectors = current_sectors[:st.session_state.aps[i]["num_sectors"]]
             
             st.markdown("**Sector Channels**")
             updated_sectors = []
             sec_cols = st.columns(3)
             for s_idx, sector in enumerate(current_sectors):
                 with sec_cols[s_idx % 3]:
-                    new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=sector["channel"], step=1, key=f"ch_{i}_{s_idx}")
+                    new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=int(sector["channel"]), step=1, key=f"ch_{i}_{s_idx}")
                     updated_sectors.append({"id": s_idx + 1, "channel": new_ch})
-
-            if (new_name != ap["name"] or new_lat != ap["lat"] or new_lon != ap["lon"] or 
-                new_h != ap["height"] or new_chan_bw != ap["channel_bw"] or new_tx != ap["tx_power"] or 
-                new_gain != ap["antenna_gain"] or new_num_sec != ap["num_sectors"] or 
-                new_bw != ap["beam_width"] or updated_sectors != ap["sectors"]):
-                
-                st.session_state.aps[i].update({
-                    "name": new_name, "lat": new_lat, "lon": new_lon,
-                    "height": new_h, "channel_bw": new_chan_bw, "tx_power": new_tx, "antenna_gain": new_gain,
-                    "num_sectors": new_num_sec, "beam_width": new_bw, "sectors": updated_sectors
-                })
-                save_data() 
-                st.rerun()
+            
+            st.session_state.aps[i]["sectors"] = updated_sectors
             
             st.divider()
             if st.button("🗑️ Delete AP", type="primary", key=f"del_{i}"):
@@ -228,127 +213,87 @@ with st.sidebar:
                 save_data()
                 st.rerun()
 
-# --- 3. Map Generation & Smart Caching ---
-current_map_state = {
-    "aps": st.session_state.aps,
-    "freq": global_freq,
-    "avail": availability_target,
-    "cpe_gain": cpe_gain,
-    "cpe_nf": cpe_nf
-}
-state_str = json.dumps(current_map_state, sort_keys=True)
+    save_data() # Saves quietly without causing an infinite rerun loop
 
-rebuild_map = False
-if st.session_state.get("last_map_state_str") != state_str:
-    rebuild_map = True
-    st.session_state.last_map_state_str = state_str
+# --- 3. Map Generation ---
+start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
+m = folium.Map(location=start_loc, zoom_start=13, control_scale=True)
 
-if rebuild_map or "map_obj" not in st.session_state:
+for ap in st.session_state.aps:
+    mcs_data = calculate_all_mcs_radii(
+        ap["lat"], ap["lon"], global_freq, 
+        ap["tx_power"], ap["antenna_gain"], 
+        cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
+    )
     
-    start_loc = st.session_state.get("map_center")
-    zoom_start = st.session_state.get("map_zoom")
+    for mcs_level in range(12):
+        data = mcs_data[mcs_level]
+        folium.Circle(
+            location=[ap["lat"], ap["lon"]],
+            radius=data['radius_m'],
+            color=MCS_COLORS[mcs_level],
+            weight=1,
+            fill=False,
+            dash_array='3, 4',
+        ).add_to(m)
+
+    start_angle = 0 
+    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
     
-    if not start_loc:
-        start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
-    if not zoom_start:
-        zoom_start = 13
-
-    m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
-
-    for ap in st.session_state.aps:
-        mcs_data = calculate_all_mcs_radii(
-            ap["lat"], ap["lon"], global_freq, 
-            ap["tx_power"], ap["antenna_gain"], 
-            cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
-        )
+    for idx, sector in enumerate(sorted_sectors):
+        end_angle = start_angle + ap["beam_width"]
         
         for mcs_level in range(12):
             data = mcs_data[mcs_level]
-            folium.Circle(
-                location=[ap["lat"], ap["lon"]],
-                radius=data['radius_m'],
-                color=MCS_COLORS[mcs_level],
-                weight=1,
-                fill=False,
-                dash_array='3, 4',
-            ).add_to(m)
-
-        start_angle = 0 
-        sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
-        
-        for idx, sector in enumerate(sorted_sectors):
-            end_angle = start_angle + ap["beam_width"]
+            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
             
-            for mcs_level in range(12):
-                data = mcs_data[mcs_level]
-                polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
-                
-                folium.Polygon(
-                    locations=polygon_points,
-                    stroke=False, 
-                    fill=True,
-                    fill_color=MCS_COLORS[mcs_level],
-                    fill_opacity=0.15,
-                    tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
-                ).add_to(m)
-                
-            largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[0]['radius_m'], start_angle, end_angle)
-            folium.PolyLine(
-                locations=largest_polygon,
-                color='black',
-                weight=1,
-                opacity=0.4
+            folium.Polygon(
+                locations=polygon_points,
+                stroke=False, 
+                fill=True,
+                fill_color=MCS_COLORS[mcs_level],
+                fill_opacity=0.15,
+                tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
             ).add_to(m)
             
-            start_angle = end_angle
-
-        folium.Marker(
-            [ap["lat"], ap["lon"]],
-            popup=f"{ap['name']} ({global_freq}GHz)",
-            tooltip=ap["name"],
-            icon=folium.Icon(color="black", icon="wifi", prefix="fa")
+        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[0]['radius_m'], start_angle, end_angle)
+        folium.PolyLine(
+            locations=largest_polygon,
+            color='black',
+            weight=1,
+            opacity=0.4
         ).add_to(m)
+        
+        start_angle = end_angle
 
-    legend_html = """
-    <div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
-    <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
-    """
-    for m_idx in range(11, -1, -1):
-        color = MCS_COLORS[m_idx]
-        mod = MCS_TABLE[m_idx]['mod']
-        legend_html += f"""<div style="margin-bottom: 2px; line-height: 12px;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
-    legend_html += "</div>"
+    folium.Marker(
+        [ap["lat"], ap["lon"]],
+        popup=f"{ap['name']} ({global_freq}GHz)",
+        tooltip=ap["name"],
+        icon=folium.Icon(color="black", icon="wifi", prefix="fa")
+    ).add_to(m)
+
+legend_html = """
+<div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
+<div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
+"""
+for m_idx in range(11, -1, -1):
+    color = MCS_COLORS[m_idx]
+    mod = MCS_TABLE[m_idx]['mod']
+    legend_html += f"""<div style="margin-bottom: 2px; line-height: 12px;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
+legend_html += "</div>"
+m.get_root().html.add_child(folium.Element(legend_html))
+
+# --- IMPORTANT: returned_objects strictly limits what the map tells Streamlit, breaking the loop ---
+map_data = st_folium(m, width=800, height=600, key="ptmp_map", returned_objects=["last_clicked"])
+
+# --- 4. Handle Map Clicks ---
+if map_data and map_data.get("last_clicked"):
+    clicked_lat = round(map_data["last_clicked"]["lat"], 6)
+    clicked_lon = round(map_data["last_clicked"]["lng"], 6)
     
-    m.get_root().html.add_child(folium.Element(legend_html))
-    st.session_state.map_obj = m
-
-# Added key="ptmp_map" to force component stability
-map_data = st_folium(st.session_state.map_obj, width=800, height=600, key="ptmp_map", returned_objects=["last_clicked", "center", "zoom"])
-
-# --- 4. Handle Map State Continuously and Safely ---
-if map_data:
-    # Safely track center (ignore microscopic float changes to break infinite loops)
-    if map_data.get("center"):
-        new_lat = map_data["center"]["lat"]
-        new_lng = map_data["center"]["lng"]
-        old_center = st.session_state.map_center
-        
-        # Only update if the map was actually panned > ~50 meters
-        if old_center is None or abs(old_center[0] - new_lat) > 0.0005 or abs(old_center[1] - new_lng) > 0.0005:
-            st.session_state.map_center = [new_lat, new_lng]
-            
-    if map_data.get("zoom"):
-        if st.session_state.map_zoom != map_data["zoom"]:
-            st.session_state.map_zoom = map_data["zoom"]
-            
-    # Safely handle clicks
-    if map_data.get("last_clicked"):
-        # Pre-round the clicks here to match the 6 decimal tolerance of the UI
-        clicked_lat = round(map_data["last_clicked"]["lat"], 6)
-        clicked_lon = round(map_data["last_clicked"]["lng"], 6)
-        
-        current_click = (clicked_lat, clicked_lon)
-        if st.session_state.last_clicked != current_click:
-            st.session_state.last_clicked = current_click
-            add_ap(clicked_lat, clicked_lon)
-            st.rerun()
+    current_click = (clicked_lat, clicked_lon)
+    if st.session_state.last_clicked != current_click:
+        st.session_state.last_clicked = current_click
+        add_ap(clicked_lat, clicked_lon)
+        st.rerun()
