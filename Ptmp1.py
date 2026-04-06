@@ -228,15 +228,6 @@ with st.sidebar:
                 save_data()
                 st.rerun()
 
-    # --- Capacity Legend ---
-    st.divider()
-    st.markdown("### Capacity Legend")
-    legend_html = "<div style='display: flex; flex-direction: column; gap: 4px;'>"
-    for m_idx in range(11, -1, -1):
-        legend_html += f"<div style='background-color:{MCS_COLORS[m_idx]}; padding:4px; text-align:center; color:black; font-weight:bold; border-radius:4px;'>MCS {m_idx} ({MCS_TABLE[m_idx]['mod']})</div>"
-    legend_html += "</div>"
-    st.markdown(legend_html, unsafe_allow_html=True)
-
 
 # --- 3. Map Generation ---
 if st.session_state.map_center:
@@ -284,7 +275,7 @@ for ap in st.session_state.aps:
                 stroke=False, 
                 fill=True,
                 fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.15, # Adjusted to 0.15 as requested
+                fill_opacity=0.15,
                 tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
             ).add_to(m)
             
@@ -292,8 +283,8 @@ for ap in st.session_state.aps:
         folium.PolyLine(
             locations=largest_polygon,
             color='black',
-            weight=1,   # Made the line thinner (was 2)
-            opacity=0.4 # Made the line more transparent (was 0.8)
+            weight=1,
+            opacity=0.4
         ).add_to(m)
         
         start_angle = end_angle
@@ -304,6 +295,36 @@ for ap in st.session_state.aps:
         tooltip=ap["name"],
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
+
+# --- NEW: Custom HTML Map Legend Overlay ---
+legend_html = """
+<div style="
+    position: absolute; 
+    bottom: 50px; 
+    left: 10px; 
+    width: 120px; 
+    background-color: rgba(255, 255, 255, 0.85); 
+    border: 1px solid grey; 
+    z-index: 9999; 
+    font-size: 10px;
+    padding: 6px;
+    border-radius: 4px;
+">
+<div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
+"""
+
+for m_idx in range(11, -1, -1):
+    color = MCS_COLORS[m_idx]
+    mod = MCS_TABLE[m_idx]['mod']
+    legend_html += f"""
+    <div style="margin-bottom: 2px; line-height: 12px;">
+        <i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i> 
+        MCS {m_idx} ({mod})
+    </div>
+    """
+
+legend_html += "</div>"
+m.get_root().html.add_child(folium.Element(legend_html))
 
 map_data = st_folium(m, width=800, height=600)
 
