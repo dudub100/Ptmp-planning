@@ -117,7 +117,6 @@ if 'ap_counter' not in st.session_state:
     st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
-    
 if 'map_center' not in st.session_state:
     st.session_state.map_center = None
 if 'map_zoom' not in st.session_state:
@@ -228,112 +227,117 @@ with st.sidebar:
                 save_data()
                 st.rerun()
 
+# --- 3. Map Generation & Smart Caching ---
+# We hash all map settings to detect if a physical rebuild of the map is necessary
+current_map_state = {
+    "aps": st.session_state.aps,
+    "freq": global_freq,
+    "avail": availability_target,
+    "cpe_gain": cpe_gain,
+    "cpe_nf": cpe_nf
+}
+state_str = json.dumps(current_map_state, sort_keys=True)
 
-# --- 3. Map Generation ---
-if st.session_state.map_center:
-    start_loc = st.session_state.map_center
-    zoom_start = st.session_state.map_zoom
-elif st.session_state.aps:
-    start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
-    zoom_start = 13
-else:
-    start_loc = [32.1750, 34.9069]
-    zoom_start = 13
+rebuild_map = False
+if st.session_state.get("last_map_state_str") != state_str:
+    rebuild_map = True
+    st.session_state.last_map_state_str = state_str
 
-m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
-
-for ap in st.session_state.aps:
-    mcs_data = calculate_all_mcs_radii(
-        ap["lat"], ap["lon"], global_freq, 
-        ap["tx_power"], ap["antenna_gain"], 
-        cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
-    )
+# ONLY recreate the folium map object if RF settings or APs actually changed
+if rebuild_map or "map_obj" not in st.session_state:
     
-    for mcs_level in range(12):
-        data = mcs_data[mcs_level]
-        folium.Circle(
-            location=[ap["lat"], ap["lon"]],
-            radius=data['radius_m'],
-            color=MCS_COLORS[mcs_level],
-            weight=1,
-            fill=False,
-            dash_array='3, 4',
-        ).add_to(m)
-
-    start_angle = 0 
-    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+    # Grab the exact coordinates the user was last looking at to prevent snap-back
+    start_loc = st.session_state.get("map_center")
+    zoom_start = st.session_state.get("map_zoom")
     
-    for idx, sector in enumerate(sorted_sectors):
-        end_angle = start_angle + ap["beam_width"]
+    if not start_loc:
+        start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
+    if not zoom_start:
+        zoom_start = 13
+
+    m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
+
+    for ap in st.session_state.aps:
+        mcs_data = calculate_all_mcs_radii(
+            ap["lat"], ap["lon"], global_freq, 
+            ap["tx_power"], ap["antenna_gain"], 
+            cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
+        )
         
         for mcs_level in range(12):
             data = mcs_data[mcs_level]
-            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
+            folium.Circle(
+                location=[ap["lat"], ap["lon"]],
+                radius=data['radius_m'],
+                color=MCS_COLORS[mcs_level],
+                weight=1,
+                fill=False,
+                dash_array='3, 4',
+            ).add_to(m)
+
+        start_angle = 0 
+        sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+        
+        for idx, sector in enumerate(sorted_sectors):
+            end_angle = start_angle + ap["beam_width"]
             
-            folium.Polygon(
-                locations=polygon_points,
-                stroke=False, 
-                fill=True,
-                fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.15,
-                tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
+            for mcs_level in range(12):
+                data = mcs_data[mcs_level]
+                polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
+                
+                folium.Polygon(
+                    locations=polygon_points,
+                    stroke=False, 
+                    fill=True,
+                    fill_color=MCS_COLORS[mcs_level],
+                    fill_opacity=0.15,
+                    tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
+                ).add_to(m)
+                
+            largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[0]['radius_m'], start_angle, end_angle)
+            folium.PolyLine(
+                locations=largest_polygon,
+                color='black',
+                weight=1,
+                opacity=0.4
             ).add_to(m)
             
-        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[0]['radius_m'], start_angle, end_angle)
-        folium.PolyLine(
-            locations=largest_polygon,
-            color='black',
-            weight=1,
-            opacity=0.4
+            start_angle = end_angle
+
+        folium.Marker(
+            [ap["lat"], ap["lon"]],
+            popup=f"{ap['name']} ({global_freq}GHz)",
+            tooltip=ap["name"],
+            icon=folium.Icon(color="black", icon="wifi", prefix="fa")
         ).add_to(m)
-        
-        start_angle = end_angle
 
-    folium.Marker(
-        [ap["lat"], ap["lon"]],
-        popup=f"{ap['name']} ({global_freq}GHz)",
-        tooltip=ap["name"],
-        icon=folium.Icon(color="black", icon="wifi", prefix="fa")
-    ).add_to(m)
-
-# --- NEW: Custom HTML Map Legend Overlay ---
-legend_html = """
-<div style="
-    position: absolute; 
-    bottom: 50px; 
-    left: 10px; 
-    width: 120px; 
-    background-color: rgba(255, 255, 255, 0.85); 
-    border: 1px solid grey; 
-    z-index: 9999; 
-    font-size: 10px;
-    padding: 6px;
-    border-radius: 4px;
-">
-<div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
-"""
-
-for m_idx in range(11, -1, -1):
-    color = MCS_COLORS[m_idx]
-    mod = MCS_TABLE[m_idx]['mod']
-    legend_html += f"""
-    <div style="margin-bottom: 2px; line-height: 12px;">
-        <i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i> 
-        MCS {m_idx} ({mod})
-    </div>
+    legend_html = """
+    <div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
+    <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
     """
+    for m_idx in range(11, -1, -1):
+        color = MCS_COLORS[m_idx]
+        mod = MCS_TABLE[m_idx]['mod']
+        legend_html += f"""<div style="margin-bottom: 2px; line-height: 12px;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
+    legend_html += "</div>"
+    
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    # Save the physical map object to session state
+    st.session_state.map_obj = m
 
-legend_html += "</div>"
-m.get_root().html.add_child(folium.Element(legend_html))
+# Render the map using the cached object
+map_data = st_folium(st.session_state.map_obj, width=800, height=600, returned_objects=["last_clicked", "center", "zoom"])
 
-map_data = st_folium(m, width=800, height=600)
-
-# --- 4. Handle Map State and Clicks ---
+# --- 4. Handle Map State continuously ---
 if map_data:
+    # Always keep our session variables updated with the exact view the user is looking at
     if map_data.get("center"):
         st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+    if map_data.get("zoom"):
         st.session_state.map_zoom = map_data["zoom"]
         
+    # Process explicit clicks to add APs
     if map_data.get("last_clicked"):
         clicked_lat = map_data["last_clicked"]["lat"]
         clicked_lon = map_data["last_clicked"]["lng"]
