@@ -1,13 +1,13 @@
 import streamlit as st
 import folium
-from folium.plugins import Draw # NEW: Drawing tool for Area of Interest
+from folium.plugins import Draw
 from streamlit_folium import st_folium
 import math
 import itur
 import astropy.units as u
 import json
 import os
-import requests # NEW: For OSM API
+import requests
 
 # --- Step 2: Wi-Fi 7 MCS Data Table ---
 MCS_TABLE = [
@@ -33,7 +33,7 @@ MCS_COLORS = {
 
 # --- Data Persistence ---
 DATA_FILE = "ap_data.json"
-CPE_FILE = "cpe_data.json" # Separate file for CPEs
+CPE_FILE = "cpe_data.json"
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -59,7 +59,6 @@ def save_cpes():
 
 # --- Building Detection Function ---
 def fetch_buildings_from_osm(south, west, north, east):
-    """Queries OSM for buildings in the provided bounding box."""
     overpass_url = "http://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json][timeout:25];
@@ -155,10 +154,15 @@ if 'cpes' not in st.session_state:
 if 'cpe_counter' not in st.session_state:
     st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
 
-if 'last_clicked' not in st.session_state:
-    st.session_state.last_clicked = None
 if 'all_drawings' not in st.session_state:
-    st.session_state.all_drawings = None # Tracks areas drawn by the user
+    st.session_state.all_drawings = None 
+
+if 'map_bounds' not in st.session_state:
+    st.session_state.map_bounds = None
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = None
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = 13
 
 def add_ap(lat, lon, name=None):
     if name is None:
@@ -205,89 +209,107 @@ with st.sidebar:
     
     st.divider()
 
-    # --- NEW: Area of Interest Building Detection ---
+    # --- Area of Interest Building Detection ---
     st.header("CPE Discovery")
-    st.markdown("1. Use the **Square/Polygon Tool** on the map to draw an area.\n2. Click the button below.")
+    st.markdown("1. Use the **Polygon/Square Tool** on the map to draw an area.\n2. Click the button below.")
     max_cpes = st.number_input("Max Buildings to Detect", value=64, min_value=1, step=10)
     
     if st.button("🏗️ Detect Buildings in Drawn Area"):
         if not st.session_state.all_drawings:
-            st.warning("No drawing found! Please draw a shape on the map first using the toolbar on the left.")
+            st.warning("No drawing found! Please draw a shape on the map first using the toolbar.")
         else:
             with st.spinner("Detecting buildings..."):
-                # Extract the bounds of the LAST drawn shape
-                last_shape = st.session_state.all_drawings[-1]
-                coords = last_shape["geometry"]["coordinates"][0]
+                # Extract bounds of the LAST drawn polygon/rectangle
+                polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] == "Polygon"]
                 
-                lats = [pt[1] for pt in coords]
-                lons = [pt[0] for pt in coords]
-                south, north = min(lats), max(lats)
-                west, east = min(lons), max(lons)
-                
-                buildings, error = fetch_buildings_from_osm(south, west, north, east)
-                
-                if error:
-                    st.error(f"Detection failed. Reason: {error}")
-                elif not buildings:
-                    st.warning("0 buildings found. Are you sure you drew the box over houses?")
+                if not polygons:
+                    st.warning("Please draw a polygon/rectangle. The marker point cannot be used for area detection.")
                 else:
-                    added_count = 0
-                    for bldg in buildings:
-                        if added_count >= max_cpes: break
-                        
-                        tags = bldg.get('tags', {})
-                        center = bldg.get('center', {})
-                        if not center: continue
-                        
-                        # Set height attribute based on API tags
-                        h = tags.get('height')
-                        if h:
-                            try: h = float(h.split()[0])
-                            except: h = 8.0
-                        elif tags.get('building:levels'):
-                            try: h = float(tags.get('building:levels')) * 3.5
-                            except: h = 8.0
-                        else:
-                            h = 8.0
-                            
-                        st.session_state.cpes.append({
-                            "name": f"CPE {st.session_state.cpe_counter}",
-                            "lat": center['lat'],
-                            "lon": center['lon'],
-                            "height": h
-                        })
-                        st.session_state.cpe_counter += 1
-                        added_count += 1
-                        
-                    save_cpes()
-                    if added_count >= max_cpes:
-                        st.success(f"Limit reached. Detected {added_count} buildings.")
+                    last_shape = polygons[-1]
+                    coords = last_shape["geometry"]["coordinates"][0]
+                    
+                    lats = [pt[1] for pt in coords]
+                    lons = [pt[0] for pt in coords]
+                    south, north = min(lats), max(lats)
+                    west, east = min(lons), max(lons)
+                    
+                    buildings, error = fetch_buildings_from_osm(south, west, north, east)
+                    
+                    if error:
+                        st.error(f"Detection failed. Reason: {error}")
+                    elif not buildings:
+                        st.warning("0 buildings found. Try drawing over a denser residential area.")
                     else:
-                        st.success(f"Successfully detected {added_count} buildings!")
-                    st.rerun()
+                        added_count = 0
+                        for bldg in buildings:
+                            if added_count >= max_cpes: break
+                            
+                            tags = bldg.get('tags', {})
+                            center = bldg.get('center', {})
+                            if not center: continue
+                            
+                            h = tags.get('height')
+                            if h:
+                                try: h = float(h.split()[0])
+                                except: h = 8.0
+                            elif tags.get('building:levels'):
+                                try: h = float(tags.get('building:levels')) * 3.5
+                                except: h = 8.0
+                            else:
+                                h = 8.0
+                                
+                            st.session_state.cpes.append({
+                                "name": f"CPE {st.session_state.cpe_counter}",
+                                "lat": center['lat'],
+                                "lon": center['lon'],
+                                "height": h
+                            })
+                            st.session_state.cpe_counter += 1
+                            added_count += 1
+                            
+                        save_cpes()
+                        if added_count >= max_cpes:
+                            st.success(f"Limit reached. Detected {added_count} buildings.")
+                        else:
+                            st.success(f"Successfully detected {added_count} buildings!")
+                        st.rerun()
 
-    # --- NEW: CPE Management ---
-    with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
+    # --- UPGRADE: Clean Excel-like Table for CPEs ---
+    with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=True):
         if st.session_state.cpes:
-            if st.button("🗑️ Clear All CPEs"):
+            if st.button("🗑️ Clear All Buildings", type="primary"):
                 st.session_state.cpes = []
                 st.session_state.cpe_counter = 1
                 save_cpes()
                 st.rerun()
                 
-        for i, cpe in enumerate(st.session_state.cpes):
-            col_n, col_h, col_d = st.columns([3, 2, 1])
-            st.session_state.cpes[i]["name"] = col_n.text_input("Name", value=cpe["name"], key=f"cpe_n_{i}", label_visibility="collapsed")
-            st.session_state.cpes[i]["height"] = col_h.number_input("H (m)", value=float(cpe["height"]), key=f"cpe_h_{i}", label_visibility="collapsed")
-            if col_d.button("X", key=f"cpe_del_{i}"):
-                st.session_state.cpes.pop(i)
+            st.markdown("Edit CPE names and heights directly in the table below:")
+            edited_cpes = st.data_editor(
+                st.session_state.cpes,
+                column_config={
+                    "name": "CPE Name",
+                    "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.6f"),
+                    "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.6f"),
+                    "height": st.column_config.NumberColumn("Height (m)", min_value=0.0)
+                },
+                hide_index=True,
+                num_rows="dynamic", # Allows user to delete rows directly from the table
+                key="cpe_editor"
+            )
+            
+            # Save automatically if user edits the table
+            if json.dumps(edited_cpes) != json.dumps(st.session_state.cpes):
+                st.session_state.cpes = edited_cpes
                 save_cpes()
                 st.rerun()
+        else:
+            st.info("No CPEs added yet. Draw an area to detect buildings.")
                 
     st.divider()
 
     st.header("AP Management")
-    with st.expander("➕ Add AP Manually"):
+    st.markdown("To drop an AP, click the **Marker tool** (📍) on the map, then click where you want it.")
+    with st.expander("➕ Add AP by Coordinates"):
         man_lat = st.number_input("Latitude", value=32.1750, format="%.6f")
         man_lon = st.number_input("Longitude", value=34.9069, format="%.6f")
         if st.button("Add to Map"):
@@ -346,12 +368,31 @@ with st.sidebar:
     save_data()
 
 # --- 3. Clean Map Generation ---
-start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
+if st.session_state.map_center:
+    start_loc = st.session_state.map_center
+    zoom = st.session_state.map_zoom
+elif st.session_state.aps:
+    start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
+    zoom = 13
+else:
+    start_loc = [32.1750, 34.9069]
+    zoom = 13
 
-m = folium.Map(location=start_loc, zoom_start=13, control_scale=True)
+m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
 
 # ADD DRAWING TOOL
-Draw(export=False).add_to(m)
+# Enabled Polygon/Rectangle for area selection, and Marker for dropping APs
+Draw(
+    export=False,
+    draw_options={
+        'polyline': False,
+        'polygon': True,
+        'rectangle': True,
+        'circle': False,
+        'marker': True,
+        'circlemarker': False
+    }
+).add_to(m)
 
 for ap in st.session_state.aps:
     mcs_data = calculate_all_mcs_radii(
@@ -413,7 +454,6 @@ for ap in st.session_state.aps:
         icon=folium.Icon(color="black", icon="wifi", prefix="fa")
     ).add_to(m)
 
-# --- NEW: Render CPEs on Map ---
 for cpe in st.session_state.cpes:
     folium.CircleMarker(
         location=[cpe["lat"], cpe["lon"]],
@@ -424,32 +464,40 @@ for cpe in st.session_state.cpes:
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
 
+# UPGRADE: Added strict black text and explicit font styling so dark mode themes don't hide it
 legend_html = """
-<div style="position: absolute; bottom: 50px; left: 10px; width: 120px; background-color: rgba(255, 255, 255, 0.85); border: 1px solid grey; z-index: 9999; font-size: 10px; padding: 6px; border-radius: 4px;">
+<div style="position: absolute; bottom: 50px; left: 10px; width: 140px; background-color: rgba(255, 255, 255, 0.95); border: 1px solid grey; z-index: 9999; font-size: 11px; padding: 6px; border-radius: 4px; color: black !important; font-family: Arial, sans-serif;">
 <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
 """
 for m_idx in range(11, min_mcs_display - 1, -1):
     color = MCS_COLORS[m_idx]
     mod = MCS_TABLE[m_idx]['mod']
-    legend_html += f"""<div style="margin-bottom: 2px; line-height: 12px;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
+    legend_html += f"""<div style="margin-bottom: 2px; line-height: 14px; white-space: nowrap;"><i style="background:{color}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({mod})</div>"""
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# Added 'all_drawings' to returned_objects so Python can capture user shapes
-map_data = st_folium(m, width=800, height=600, returned_objects=["last_clicked", "all_drawings"])
+# Removed 'last_clicked' to prevent single clicks from dropping APs! 
+# We now rely exclusively on 'all_drawings' for dropping AP markers.
+map_data = st_folium(m, width=800, height=600, returned_objects=["all_drawings", "bounds", "center", "zoom"])
 
 # --- 4. Handle Map Events ---
 if map_data:
-    # Save drawings to session state to process building detection
-    if map_data.get("all_drawings") is not None:
+    if map_data.get("bounds"):
+        st.session_state.map_bounds = map_data["bounds"]
+    if map_data.get("center"):
+        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+    if map_data.get("zoom"):
+        st.session_state.map_zoom = map_data["zoom"]
+
+    if map_data.get("all_drawings"):
         st.session_state.all_drawings = map_data["all_drawings"]
         
-    if map_data.get("last_clicked"):
-        clicked_lat = round(map_data["last_clicked"]["lat"], 6)
-        clicked_lon = round(map_data["last_clicked"]["lng"], 6)
-        
-        current_click = (clicked_lat, clicked_lon)
-        if st.session_state.last_clicked != current_click:
-            st.session_state.last_clicked = current_click
-            add_ap(clicked_lat, clicked_lon)
+        # UPGRADE: Intercept AP drops! If the user just drew a Point (Marker), drop an AP and clear it.
+        latest_drawing = map_data["all_drawings"][-1]
+        if latest_drawing["geometry"]["type"] == "Point":
+            lon, lat = latest_drawing["geometry"]["coordinates"]
+            add_ap(lat, lon)
+            
+            # Clear drawing state so it doesn't loop, map redraws with permanent AP
+            st.session_state.all_drawings = None 
             st.rerun()
