@@ -32,9 +32,7 @@ MCS_COLORS = {
 
 # --- Building Detection Function ---
 def fetch_buildings_from_osm(south, west, north, east):
-    """Queries OSM Overpass API for buildings in the visible area."""
     overpass_url = "http://overpass-api.de/api/interpreter"
-    # Filter for ways (buildings) within the bounding box
     overpass_query = f"""
     [out:json][timeout:25];
     (
@@ -143,25 +141,41 @@ with st.sidebar:
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
     availability_target = st.number_input("Availability Target (%)", value=99.9, format="%.3f")
-    min_mcs_display = st.selectbox("Min MCS to Display", options=range(12), index=0)
+    
+    min_mcs_display = st.selectbox(
+        "Min MCS to Display", 
+        options=range(12), 
+        index=0,
+        format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})"
+    )
+    
     cpe_gain = st.number_input("Global CPE Gain (dBi)", value=15.0)
     cpe_nf = st.number_input("CPE Noise Fig (dB)", value=7.0)
 
     st.divider()
     st.header("CPE Discovery")
-    # THE BUTTON
+    
+    # NEW: Detection Limit Input
+    max_cpes_to_detect = st.number_input("Max Buildings to Detect", value=256, min_value=1, step=50)
+    
     if st.button("🏗️ Detect Buildings (Visible Map)"):
         if st.session_state.map_bounds:
             b = st.session_state.map_bounds
             buildings = fetch_buildings_from_osm(b['_southWest']['lat'], b['_southWest']['lng'], b['_northEast']['lat'], b['_northEast']['lng'])
             
             new_cpes = 0
+            limit_reached = False
+            
             for bldg in buildings:
+                # Truncate loop if limit reached
+                if new_cpes >= max_cpes_to_detect:
+                    limit_reached = True
+                    break
+                    
                 tags = bldg.get('tags', {})
                 center = bldg.get('center', {})
                 if not center: continue
                 
-                # Height Guesstimate Logic
                 h = tags.get('height')
                 if h:
                     try: h = float(h.split()[0])
@@ -178,15 +192,26 @@ with st.sidebar:
                 })
                 st.session_state.cpe_counter += 1
                 new_cpes += 1
-            st.success(f"Added {new_cpes} buildings as CPEs!")
+            
             save_all_data()
+            if limit_reached:
+                st.warning(f"Detection limit reached! Added {new_cpes} buildings. Zoom in or increase the limit for more.")
+            else:
+                st.success(f"Added {new_cpes} buildings as CPEs!")
             st.rerun()
         else:
             st.warning("Move the map slightly first to capture visibility area.")
 
     st.divider()
-    # List CPEs in the sidebar
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})"):
+        # Show button to clear all CPEs
+        if st.session_state.cpes:
+            if st.button("🗑️ Clear All CPEs", type="primary"):
+                st.session_state.cpes = []
+                st.session_state.cpe_counter = 1
+                save_all_data()
+                st.rerun()
+                
         for i, cpe in enumerate(st.session_state.cpes):
             col_cn, col_cd = st.columns([3, 1])
             st.session_state.cpes[i]["name"] = col_cn.text_input(f"Name", value=cpe["name"], key=f"cpe_n_{i}")
@@ -197,7 +222,6 @@ with st.sidebar:
                 st.rerun()
 
     st.divider()
-    # List APs in the sidebar
     with st.expander(f"📡 Managed APs ({len(st.session_state.aps)})"):
         for i, ap in enumerate(st.session_state.aps):
             st.session_state.aps[i]["name"] = st.text_input(f"AP Name", value=ap["name"], key=f"ap_n_{i}")
@@ -210,27 +234,35 @@ with st.sidebar:
 start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
 m = folium.Map(location=start_loc, zoom_start=15, control_scale=True)
 
-# Draw APs and Heatmaps
 for ap in st.session_state.aps:
     radii_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap["channel_bw"], availability_target)
     
     start_angle = 0
     for sector in sorted(ap["sectors"], key=lambda x: x["id"]):
         end_angle = start_angle + ap["beam_width"]
+        
         for m_idx in range(min_mcs_display, 12):
             poly = get_sector_polygon(ap["lat"], ap["lon"], radii_data[m_idx]["radius_m"], start_angle, end_angle)
             folium.Polygon(locations=poly, stroke=False, fill=True, fill_color=MCS_COLORS[m_idx], fill_opacity=0.15).add_to(m)
+        
+        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], radii_data[min_mcs_display]['radius_m'], start_angle, end_angle)
+        folium.PolyLine(
+            locations=largest_polygon,
+            color='black',
+            weight=1,
+            opacity=0.4
+        ).add_to(m)
+        
         start_angle = end_angle
+        
     folium.Marker([ap["lat"], ap["lon"]], tooltip=ap["name"], icon=folium.Icon(color="black", icon="tower-broadcast", prefix="fa")).add_to(m)
 
-# Draw CPEs
 for cpe in st.session_state.cpes:
     folium.CircleMarker(
         [cpe["lat"], cpe["lon"]], radius=4, color="blue", fill=True, 
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
 
-# Custom Legend
 legend_html = f'<div style="position: absolute; bottom: 50px; left: 10px; width: 100px; background:white; z-index:9999; font-size:10px; padding:5px; border-radius:5px; border:1px solid grey;"><b>Capacity</b><br>'
 for m_idx in range(11, min_mcs_display-1, -1):
     legend_html += f'<i style="background:{MCS_COLORS[m_idx]}; width:10px; height:10px; float:left; margin-right:5px;"></i>MCS {m_idx}<br>'
