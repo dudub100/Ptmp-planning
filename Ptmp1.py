@@ -23,20 +23,10 @@ MCS_TABLE = [
     {"mcs": 11, "mod": "1024-QAM", "snr": 33, "caps": {40: 270.83, 80: 567.13, 160: 1134.26, 320: 2268.52}}
 ]
 
-# Color mapping from Edge (Red) to Peak (Blue) for MCS 0 to 11
 MCS_COLORS = {
-    0: '#ff0000',  # Red
-    1: '#ff4500',  # OrangeRed
-    2: '#ff8c00',  # DarkOrange
-    3: '#ffa500',  # Orange
-    4: '#ffd700',  # Gold
-    5: '#ffff00',  # Yellow
-    6: '#adff2f',  # GreenYellow
-    7: '#7fff00',  # Chartreuse
-    8: '#00ff00',  # Lime
-    9: '#00fa9a',  # MediumSpringGreen
-    10: '#00ced1', # DarkTurquoise
-    11: '#0000ff'  # Blue
+    0: '#ff0000', 1: '#ff4500', 2: '#ff8c00', 3: '#ffa500', 
+    4: '#ffd700', 5: '#ffff00', 6: '#adff2f', 7: '#7fff00', 
+    8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
 # --- Data Persistence ---
@@ -58,7 +48,6 @@ def save_data():
 # --- Link Budget & ITU-R Math ---
 @st.cache_data
 def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_figure, channel_bw, availability):
-    """Calculates max radius in meters for MCS 0 through 11."""
     radii_results = {}
     bw_hz = channel_bw * 1e6
     noise_floor_dbm = -174 + (10 * math.log10(bw_hz)) + noise_figure
@@ -71,13 +60,12 @@ def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_f
     gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
     gamma_g = gamma_g_qty.value 
     
-    # Use dynamic availability parameter
     p = 100.0 - availability 
     R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
     gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
     gamma_r = gamma_r_qty.value
     
-    for mcs_index in range(12): # MCS 0 to 11
+    for mcs_index in range(12): 
         mcs_data = MCS_TABLE[mcs_index]
         rx_threshold = noise_floor_dbm + mcs_data["snr"]
         
@@ -126,12 +114,15 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
 if 'aps' not in st.session_state:
     st.session_state.aps = load_data() 
 if 'ap_counter' not in st.session_state:
-    if st.session_state.aps:
-        st.session_state.ap_counter = len(st.session_state.aps) + 1
-    else:
-        st.session_state.ap_counter = 1
+    st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
 if 'last_clicked' not in st.session_state:
     st.session_state.last_clicked = None
+    
+# NEW: Track map zoom and center to preserve user view
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = None
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = None
 
 def add_ap(lat, lon, name=None):
     if name is None:
@@ -163,8 +154,6 @@ st.title("📡 Point-to-Multipoint Planning App")
 with st.sidebar:
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
-    
-    # NEW: Availability Target
     availability_target = st.number_input("Availability Target (%)", value=99.9, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
     
     col_cpe1, col_cpe2 = st.columns(2)
@@ -244,15 +233,26 @@ with st.sidebar:
     st.divider()
     st.markdown("### Capacity Legend")
     legend_html = "<div style='display: flex; flex-direction: column; gap: 4px;'>"
-    for m in range(11, -1, -1):
-        legend_html += f"<div style='background-color:{MCS_COLORS[m]}; padding:4px; text-align:center; color:black; font-weight:bold; border-radius:4px;'>MCS {m} ({MCS_TABLE[m]['mod']})</div>"
+    for m_idx in range(11, -1, -1):
+        legend_html += f"<div style='background-color:{MCS_COLORS[m_idx]}; padding:4px; text-align:center; color:black; font-weight:bold; border-radius:4px;'>MCS {m_idx} ({MCS_TABLE[m_idx]['mod']})</div>"
     legend_html += "</div>"
     st.markdown(legend_html, unsafe_allow_html=True)
 
 
 # --- 3. Map Generation ---
-start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]] if st.session_state.aps else [32.1750, 34.9069]
-m = folium.Map(location=start_loc, zoom_start=13)
+# Determine where to center the map based on user's last interaction
+if st.session_state.map_center:
+    start_loc = st.session_state.map_center
+    zoom_start = st.session_state.map_zoom
+elif st.session_state.aps:
+    start_loc = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]]
+    zoom_start = 13
+else:
+    start_loc = [32.1750, 34.9069]
+    zoom_start = 13
+
+# Add control_scale=True to display the scale bar
+m = folium.Map(location=start_loc, zoom_start=zoom_start, control_scale=True)
 
 for ap in st.session_state.aps:
     mcs_data = calculate_all_mcs_radii(
@@ -261,7 +261,6 @@ for ap in st.session_state.aps:
         cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target
     )
     
-    # 1. Draw all MCS reference circles around the AP (Dashed lines)
     for mcs_level in range(12):
         data = mcs_data[mcs_level]
         folium.Circle(
@@ -273,28 +272,25 @@ for ap in st.session_state.aps:
             dash_array='3, 4',
         ).add_to(m)
 
-    # 2. Draw Sectors colored by Capacity (Heatmap slices)
     start_angle = 0 
     sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
     
     for idx, sector in enumerate(sorted_sectors):
         end_angle = start_angle + ap["beam_width"]
         
-        # Draw from MCS 0 (largest) to MCS 11 (smallest) so smaller slices lay on top
         for mcs_level in range(12):
             data = mcs_data[mcs_level]
             polygon_points = get_sector_polygon(ap["lat"], ap["lon"], data['radius_m'], start_angle, end_angle)
             
             folium.Polygon(
                 locations=polygon_points,
-                stroke=False, # We don't want lines separating every MCS layer
+                stroke=False, 
                 fill=True,
                 fill_color=MCS_COLORS[mcs_level],
-                fill_opacity=0.6,
+                fill_opacity=0.1, # Drastically lowered to keep the map visible through overlapping layers
                 tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level} ({data['capacity']} Mbps)"
             ).add_to(m)
             
-        # Draw the bold black boundary line for the entire sector (using the largest MCS 0 radius)
         largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[0]['radius_m'], start_angle, end_angle)
         folium.PolyLine(
             locations=largest_polygon,
@@ -305,7 +301,6 @@ for ap in st.session_state.aps:
         
         start_angle = end_angle
 
-    # 3. Place AP Marker on top
     folium.Marker(
         [ap["lat"], ap["lon"]],
         popup=f"{ap['name']} ({global_freq}GHz)",
@@ -315,13 +310,20 @@ for ap in st.session_state.aps:
 
 map_data = st_folium(m, width=800, height=600)
 
-# --- 4. Handle Map Clicks ---
-if map_data and map_data.get("last_clicked"):
-    clicked_lat = map_data["last_clicked"]["lat"]
-    clicked_lon = map_data["last_clicked"]["lng"]
-    
-    current_click = (clicked_lat, clicked_lon)
-    if st.session_state.last_clicked != current_click:
-        st.session_state.last_clicked = current_click
-        add_ap(clicked_lat, clicked_lon)
-        st.rerun()
+# --- 4. Handle Map State and Clicks ---
+if map_data:
+    # Always keep the session state updated with the user's current zoom/pan
+    if map_data.get("center"):
+        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
+        st.session_state.map_zoom = map_data["zoom"]
+        
+    # If the user actually clicked to add an AP
+    if map_data.get("last_clicked"):
+        clicked_lat = map_data["last_clicked"]["lat"]
+        clicked_lon = map_data["last_clicked"]["lng"]
+        
+        current_click = (clicked_lat, clicked_lon)
+        if st.session_state.last_clicked != current_click:
+            st.session_state.last_clicked = current_click
+            add_ap(clicked_lat, clicked_lon)
+            st.rerun()
