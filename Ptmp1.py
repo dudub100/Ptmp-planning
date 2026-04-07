@@ -46,7 +46,6 @@ def generate_kml():
     for ap in st.session_state.aps:
         kml.append(f'<Placemark><name>{ap["name"]}</name><Point><coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates></Point></Placemark>')
         
-        # Sector polygons (requires recalculating radii briefly for export)
         mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
         start_angle = 0 
         for sector in sorted(ap.get("sectors", []), key=lambda x: x["id"]):
@@ -55,7 +54,7 @@ def generate_kml():
                 if mcs_level < st.session_state.glob_min_mcs: continue
                 poly_pts = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[mcs_level]['radius_m'], start_angle, end_angle)
                 coords_str = " ".join([f"{lon},{lat},0" for lat, lon in poly_pts])
-                kml_color = hex_to_kml_color(MCS_COLORS[mcs_level], "40") # 25% opacity
+                kml_color = hex_to_kml_color(MCS_COLORS[mcs_level], "40") 
                 kml.append(f"""
                 <Placemark><name>{ap["name"]} Sec {sector["id"]} MCS {mcs_level}</name>
                 <Style><PolyStyle><color>{kml_color}</color></PolyStyle><LineStyle><width>0</width></LineStyle></Style>
@@ -71,8 +70,7 @@ def generate_kml():
         <Style><IconStyle><color>{cpe_color}</color><scale>1.0</scale></IconStyle></Style>
         <Point><coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates></Point></Placemark>
         """)
-        
-        # THE FIX: Strictly verify the line is an actual list of 2 coordinates before building the KML link!
+        # THE FIX: Strictly verify line data
         if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
             line_coords = f"{cpe['line'][0][1]},{cpe['line'][0][0]},0 {cpe['line'][1][1]},{cpe['line'][1][0]},0"
             kml.append(f"""
@@ -83,9 +81,6 @@ def generate_kml():
     
     kml.extend(['</Document>', '</kml>'])
     return "\n".join(kml)
-
-
-
 
 def generate_pdf():
     pdf = FPDF()
@@ -226,7 +221,6 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     return points
 
 # --- 1. Session State Initialization ---
-# Ensure Global states exist so they can be overwritten by Load Feature
 if 'glob_freq' not in st.session_state: st.session_state.glob_freq = 26
 if 'glob_avail' not in st.session_state: st.session_state.glob_avail = 99.9
 if 'glob_min_mcs' not in st.session_state: st.session_state.glob_min_mcs = 0
@@ -268,7 +262,6 @@ st.title("📡 Point-to-Multipoint Planning App")
 with st.sidebar:
     st.header("Global Settings")
     
-    # Linked directly to session_state so JSON Load overwrites the UI
     st.session_state.glob_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=[5, 26, 60].index(st.session_state.glob_freq))
     st.session_state.glob_avail = st.number_input("Availability Target (%)", value=st.session_state.glob_avail, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
     st.session_state.glob_min_mcs = st.selectbox("Minimum Displayed MCS", options=list(range(12)), index=st.session_state.glob_min_mcs, format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})")
@@ -443,11 +436,10 @@ with st.sidebar:
                 st.rerun()
             st.markdown("---")
 
-    # --- NEW: Save, Load & Export Module ---
+    # --- Save, Load & Export Module ---
     st.divider()
     st.header("💾 Save, Load & Export")
     
-    # 1. JSON Save
     export_dict = {
         "global_settings": {
             "freq": st.session_state.glob_freq, "avail": st.session_state.glob_avail,
@@ -459,7 +451,6 @@ with st.sidebar:
     json_str = json.dumps(export_dict, indent=4)
     st.download_button(label="1️⃣ Save Planning to File (JSON)", data=json_str, file_name="ptmp_plan.json", mime="application/json", use_container_width=True)
     
-    # 2. JSON Load
     uploaded_file = st.file_uploader("2️⃣ Load Saved Planning", type=["json"])
     if uploaded_file is not None:
         if st.button("Load File", use_container_width=True):
@@ -472,7 +463,6 @@ with st.sidebar:
             st.session_state.aps = data.get("aps", [])
             st.session_state.cpes = data.get("cpes", [])
             
-            # Fix Counters
             ap_ids = [int(a['name'].split()[-1]) for a in st.session_state.aps if a['name'].split()[-1].isdigit()]
             st.session_state.ap_counter = max(ap_ids + [0]) + 1
             cpe_ids = [int(c['name'].split()[-1]) for c in st.session_state.cpes if c['name'].split()[-1].isdigit()]
@@ -481,11 +471,9 @@ with st.sidebar:
             st.session_state.map_key += 1
             st.rerun()
             
-    # 3. Export KML
     kml_data = generate_kml()
     st.download_button(label="3️⃣ Export Map to Google Earth (KML)", data=kml_data, file_name="ptmp_map.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
 
-    # 4. Export PDF Report
     pdf_data = generate_pdf()
     st.download_button(label="4️⃣ Download PDF Report", data=pdf_data, file_name="ptmp_report.pdf", mime="application/pdf", use_container_width=True)
 
@@ -531,7 +519,9 @@ for cpe in st.session_state.cpes:
         location=[cpe["lat"], cpe["lon"]], radius=5, color="black", weight=1, fill=True, fill_color=c_color, fill_opacity=1.0, 
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
-    if cpe.get("line"):
+    
+    # THE FIX: Safely verify the line structure before Folium renders it
+    if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
         folium.PolyLine(
             locations=cpe["line"], color=c_color, weight=2, dash_array='5, 5', opacity=0.8,
             tooltip=f"{cpe['name']} to {cpe['ap']} ({cpe['mcs']})"
