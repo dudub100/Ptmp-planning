@@ -57,9 +57,8 @@ def save_cpes():
     with open(CPE_FILE, "w") as f:
         json.dump(st.session_state.cpes, f)
 
-# --- Building Detection Function (UPGRADED TO EXACT POLYGON) ---
+# --- Building Detection Function ---
 def fetch_buildings_from_osm_poly(poly_str):
-    """Queries OSM for buildings strictly inside the exact polygon points provided."""
     overpass_url = "http://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json][timeout:25];
@@ -195,10 +194,7 @@ with st.sidebar:
                 last_shape = polygons[-1]
                 coords = last_shape["geometry"]["coordinates"][0]
                 
-                # Format coordinates for Overpass 'poly' query: "lat1 lon1 lat2 lon2 ..."
                 poly_str = " ".join([f"{pt[1]} {pt[0]}" for pt in coords])
-                
-                # For centering the map later
                 lats, lons = [pt[1] for pt in coords], [pt[0] for pt in coords]
                 
                 buildings, error = fetch_buildings_from_osm_poly(poly_str)
@@ -257,7 +253,6 @@ with st.sidebar:
                 new_n = col_n.text_input("Name", value=cpe["name"], key=f"c_n_{i}", label_visibility="collapsed")
                 new_h = col_h.number_input("H (m)", value=float(cpe["height"]), key=f"c_h_{i}", label_visibility="collapsed")
                 
-                # Auto-save changes made in the text boxes
                 if new_n != cpe["name"] or new_h != cpe["height"]:
                     st.session_state.cpes[i]["name"] = new_n
                     st.session_state.cpes[i]["height"] = new_h
@@ -324,10 +319,6 @@ else:
 
 m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
 
-for drawing in st.session_state.all_drawings:
-    if drawing["geometry"]["type"] in ["Polygon", "Rectangle"]:
-        folium.GeoJson(drawing, style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.2}).add_to(m)
-
 Draw(
     export=False,
     draw_options={'polyline': False, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': True, 'circlemarker': False}
@@ -365,29 +356,25 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings", "center", "zoom"], key=f"ptmp_map_{st.session_state.map_key}")
+# THE FIX: We ONLY ask for "all_drawings". No center, no zoom tracking. This ends the refresh loop permanently.
+map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
 
 # --- 4. Handle Drawing Events ---
-if map_data:
-    if map_data.get("center"):
-        st.session_state.map_center = [map_data["center"]["lat"], map_data["center"]["lng"]]
-    if map_data.get("zoom"):
-        st.session_state.map_zoom = map_data["zoom"]
-
-    if map_data.get("all_drawings") is not None:
-        current_drawings = map_data["all_drawings"]
-        
-        new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
-        
-        if new_point:
-            lon, lat = new_point["geometry"]["coordinates"]
-            add_ap(lat, lon)
-            st.session_state.map_center = [lat, lon]
-            st.session_state.map_zoom = 15
-            st.session_state.all_drawings = []
-            st.session_state.map_key += 1
-            st.rerun()
-            
-        elif str(current_drawings) != str(st.session_state.all_drawings):
-            st.session_state.all_drawings = current_drawings
-            st.rerun()
+if map_data and map_data.get("all_drawings") is not None:
+    current_drawings = map_data["all_drawings"]
+    
+    # Save drawings silently into memory so the "Detect Buildings" button can read them
+    st.session_state.all_drawings = current_drawings
+    
+    # Check if a Marker Point (AP) was dropped
+    new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
+    
+    if new_point:
+        lon, lat = new_point["geometry"]["coordinates"]
+        add_ap(lat, lon)
+        # Focus map and clear drawings
+        st.session_state.map_center = [lat, lon]
+        st.session_state.map_zoom = 15
+        st.session_state.all_drawings = []
+        st.session_state.map_key += 1
+        st.rerun()
