@@ -33,6 +33,10 @@ MCS_COLORS = {
     8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
+# --- Data Persistence Constants (THE MISSING LINES) ---
+DATA_FILE = "ap_data.json"
+CPE_FILE = "cpe_data.json"
+
 # --- Export Generators (KML & PDF) ---
 def hex_to_kml_color(hex_str, opacity="7f"):
     h = hex_str.lstrip('#')
@@ -270,6 +274,7 @@ st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
     st.header("Global Settings")
+    
     st.session_state.glob_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=[5, 26, 60].index(st.session_state.glob_freq))
     st.session_state.glob_avail = st.number_input("Availability Target (%)", value=st.session_state.glob_avail, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
     st.session_state.glob_min_mcs = st.selectbox("Minimum Displayed MCS", options=list(range(12)), index=st.session_state.glob_min_mcs, format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})")
@@ -388,7 +393,6 @@ with st.sidebar:
             st.session_state.map_key += 1
             st.rerun()
 
-    # --- THE FIX: Decoupling internal map data from the UI Table ---
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=False):
         if st.session_state.cpes:
             if st.button("🗑️ Clear All Buildings", type="primary", use_container_width=True):
@@ -397,7 +401,6 @@ with st.sidebar:
                 st.session_state.map_key += 1
                 st.rerun()
                 
-            # Create a safe copy of the data that EXCLUDES 'color' and 'line' so Streamlit doesn't wipe them
             safe_cpes = [{"name": c["name"], "lat": c["lat"], "lon": c["lon"], "height": c["height"], "ap": c.get("ap", "None"), "mcs": c.get("mcs", "N/A")} for c in st.session_state.cpes]
             
             edited_cpes = st.data_editor(
@@ -406,11 +409,9 @@ with st.sidebar:
                 hide_index=True, num_rows="dynamic", key="cpe_editor"
             )
             
-            # If the user edited the table, carefully merge the changes back WITHOUT destroying lines
             if json.dumps(safe_cpes) != json.dumps(edited_cpes):
                 new_cpes = []
                 for edited in edited_cpes:
-                    # Find original match to keep internal data safe
                     orig = next((c for c in st.session_state.cpes if c["lat"] == edited["lat"] and c["lon"] == edited["lon"]), None)
                     if orig:
                         orig["name"] = edited["name"]
