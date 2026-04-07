@@ -71,7 +71,9 @@ def generate_kml():
         <Style><IconStyle><color>{cpe_color}</color><scale>1.0</scale></IconStyle></Style>
         <Point><coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates></Point></Placemark>
         """)
-        if cpe.get("line"):
+        
+        # THE FIX: Strictly verify the line is an actual list of 2 coordinates before building the KML link!
+        if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
             line_coords = f"{cpe['line'][0][1]},{cpe['line'][0][0]},0 {cpe['line'][1][1]},{cpe['line'][1][0]},0"
             kml.append(f"""
             <Placemark><name>Link: {cpe['name']} to {cpe['ap']}</name>
@@ -81,6 +83,9 @@ def generate_kml():
     
     kml.extend(['</Document>', '</kml>'])
     return "\n".join(kml)
+
+
+
 
 def generate_pdf():
     pdf = FPDF()
