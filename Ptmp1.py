@@ -59,7 +59,6 @@ def save_cpes():
 
 # --- Spatial & Geometry Math ---
 def haversine(lat1, lon1, lat2, lon2):
-    """Calculate distance in meters between two lat/lon points."""
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi, dlam = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
@@ -67,14 +66,12 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_bearing(lat1, lon1, lat2, lon2):
-    """Calculate bearing from point 1 to point 2."""
     dLon = math.radians(lon2 - lon1)
     y = math.sin(dLon) * math.cos(math.radians(lat2))
     x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dLon)
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 def is_in_sector(bearing, ap):
-    """Check if a bearing falls within any of the AP's active sectors."""
     start_angle = 0
     sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
     for sector in sorted_sectors:
@@ -83,51 +80,35 @@ def is_in_sector(bearing, ap):
         
         if norm_start < norm_end:
             if norm_start <= bearing <= norm_end: return True
-        else: # Handle 360 degree wrap-around (e.g., sector crosses North)
+        else:
             if bearing >= norm_start or bearing <= norm_end: return True
         start_angle = end_angle
     return False
 
 # --- Elevation APIs & Line of Sight ---
 def get_elevation_profile(lats, lons):
-    """Fetch elevation data using OpenTopoData, fallback to Open-Elevation."""
     locations = "|".join([f"{lat},{lon}" for lat, lon in zip(lats, lons)])
-    
-    # 1. Try OpenTopoData
     try:
         res = requests.get(f"https://api.opentopodata.org/v1/srtm90m?locations={locations}", timeout=5)
-        if res.status_code == 200:
-            return [r['elevation'] for r in res.json()['results']]
+        if res.status_code == 200: return [r['elevation'] for r in res.json()['results']]
     except: pass
-    
-    # 2. Try Open-Elevation Fallback
     try:
         payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in zip(lats, lons)]}
         res = requests.post("https://api.open-elevation.com/api/v1/lookup", json=payload, timeout=5)
-        if res.status_code == 200:
-            return [r['elevation'] for r in res.json()['results']]
+        if res.status_code == 200: return [r['elevation'] for r in res.json()['results']]
     except: pass
-    
-    # 3. Last Resort Fallback (Assume flat earth so app doesn't crash)
     return [0] * len(lats)
 
 def check_line_of_sight(lat1, lon1, h1, lat2, lon2, h2):
-    """Checks if radio wave clears terrain between AP and CPE."""
-    num_points = 10 # Sample 10 points along the path
+    num_points = 10
     lats = [lat1 + (lat2 - lat1) * i / (num_points - 1) for i in range(num_points)]
     lons = [lon1 + (lon2 - lon1) * i / (num_points - 1) for i in range(num_points)]
-    
     elevations = get_elevation_profile(lats, lons)
-    
-    # Absolute height (ground elevation + building/tower height)
     alt1 = elevations[0] + h1
     alt2 = elevations[-1] + h2
-    
-    # Linear interpolation of the visual wave path
     for i in range(1, num_points - 1):
         wave_alt = alt1 + (alt2 - alt1) * i / (num_points - 1)
-        if elevations[i] >= wave_alt:
-            return False # Terrain blocks the signal
+        if elevations[i] >= wave_alt: return False
     return True
 
 # --- External Queries ---
@@ -292,7 +273,6 @@ with st.sidebar:
             st.error("No APs exist to assign CPEs to!")
         else:
             with st.spinner("Calculating Links & Checking Line of Sight..."):
-                # Pre-calculate AP radii to save time
                 ap_radii_cache = {}
                 for ap in st.session_state.aps:
                     ap_radii_cache[ap['name']] = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target)
@@ -301,22 +281,17 @@ with st.sidebar:
                 for i, cpe in enumerate(st.session_state.cpes):
                     valid_aps = []
                     
-                    # 1. Filter APs by Distance and Sector
                     for ap in st.session_state.aps:
                         dist = haversine(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
                         bearing = get_bearing(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
-                        
-                        # Max coverage radius is MCS 0
                         max_radius = ap_radii_cache[ap['name']][0]['radius_m']
                         
                         if dist <= max_radius and is_in_sector(bearing, ap):
                             valid_aps.append({"ap": ap, "dist": dist})
                     
-                    # Sort valid APs by closest distance
                     valid_aps.sort(key=lambda x: x["dist"])
                     
                     assigned = False
-                    # 2. Check Line of Sight for valid APs
                     for candidate in valid_aps:
                         ap = candidate["ap"]
                         dist = candidate["dist"]
@@ -324,7 +299,6 @@ with st.sidebar:
                         has_los = check_line_of_sight(ap['lat'], ap['lon'], ap['height'], cpe['lat'], cpe['lon'], cpe['height'])
                         
                         if has_los:
-                            # 3. Find the best capacity tier
                             best_mcs = 0
                             capacity = 0
                             radii_data = ap_radii_cache[ap['name']]
@@ -333,28 +307,29 @@ with st.sidebar:
                                     best_mcs = m_idx
                                     capacity = radii_data[m_idx]['capacity']
                                     break
-                                    
+                            
+                            # UPDATED: We now map the CPE color directly to the matching MCS Color
                             st.session_state.cpes[i].update({
                                 "ap": ap['name'],
                                 "mcs": f"MCS {best_mcs} ({capacity}M)",
-                                "color": "#00FF00", # Green means successful link
+                                "color": MCS_COLORS[best_mcs], 
                                 "line": [(ap['lat'], ap['lon']), (cpe['lat'], cpe['lon'])]
                             })
                             assigned = True
                             success_count += 1
-                            break # Move to next CPE
+                            break
                     
-                    # If completely failed
                     if not assigned:
+                        # Dark gray for completely failed assignments to separate from MCS 0 (Red)
                         st.session_state.cpes[i].update({
                             "ap": "Failed",
                             "mcs": "N/A",
-                            "color": "#FF0000", # Red means blocked or out of range
+                            "color": "#555555", 
                             "line": None
                         })
                 
                 save_cpes()
-                st.session_state.map_key += 1 # Force redraw to show lines
+                st.session_state.map_key += 1 
                 st.success(f"Assigned {success_count}/{len(st.session_state.cpes)} CPEs!")
                 st.rerun()
 
@@ -385,7 +360,7 @@ with st.sidebar:
                     "height": st.column_config.NumberColumn("H(m)"),
                     "ap": st.column_config.TextColumn("Assigned AP", disabled=True),
                     "mcs": st.column_config.TextColumn("Capacity", disabled=True),
-                    "color": None, # Hide internal vars
+                    "color": None, 
                     "line": None
                 },
                 hide_index=True, num_rows="dynamic", key="cpe_editor"
@@ -476,14 +451,14 @@ for ap in st.session_state.aps:
 
 # --- Render Assigned CPEs and Links ---
 for cpe in st.session_state.cpes:
-    # Use the color assigned by the logic (Blue=Unassigned, Green=Success, Red=Fail)
     c_color = cpe.get("color", "#0000FF") 
+    
+    # UPDATED: Added black outline (color="black", weight=1) so the colored dots pop out from the colored sectors!
     folium.CircleMarker(
-        location=[cpe["lat"], cpe["lon"]], radius=4, color=c_color, fill=True, fill_opacity=1.0, 
+        location=[cpe["lat"], cpe["lon"]], radius=5, color="black", weight=1, fill=True, fill_color=c_color, fill_opacity=1.0, 
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
     
-    # Draw the connection line if assigned
     if cpe.get("line"):
         folium.PolyLine(
             locations=cpe["line"], color=c_color, weight=2, dash_array='5, 5', opacity=0.8,
