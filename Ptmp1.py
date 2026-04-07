@@ -1,0 +1,517 @@
+import streamlit as st
+import folium
+from folium.plugins import Draw
+from streamlit_folium import st_folium
+import math
+import itur
+import astropy.units as u
+import json
+import os
+import requests
+
+# --- Step 2: Wi-Fi 7 MCS Data Table ---
+MCS_TABLE = [
+    {"mcs": 0,  "mod": "BPSK",     "snr": 2,  "caps": {40: 16.25,  80: 34.03,  160: 68.06,   320: 136.11}},
+    {"mcs": 1,  "mod": "QPSK",     "snr": 5,  "caps": {40: 32.50,  80: 68.06,  160: 136.11,  320: 272.22}},
+    {"mcs": 2,  "mod": "QPSK",     "snr": 8,  "caps": {40: 48.75,  80: 102.08, 160: 204.17,  320: 408.33}},
+    {"mcs": 3,  "mod": "16-QAM",   "snr": 11, "caps": {40: 65.00,  80: 136.11, 160: 272.22,  320: 544.44}},
+    {"mcs": 4,  "mod": "16-QAM",   "snr": 14, "caps": {40: 97.50,  80: 204.17, 160: 408.33,  320: 816.67}},
+    {"mcs": 5,  "mod": "64-QAM",   "snr": 16, "caps": {40: 130.00, 80: 272.22, 160: 544.44,  320: 1088.89}},
+    {"mcs": 6,  "mod": "64-QAM",   "snr": 18, "caps": {40: 146.25, 80: 306.25, 160: 612.50,  320: 1225.00}},
+    {"mcs": 7,  "mod": "64-QAM",   "snr": 21, "caps": {40: 162.50, 80: 340.28, 160: 680.56,  320: 1361.11}},
+    {"mcs": 8,  "mod": "256-QAM",  "snr": 24, "caps": {40: 195.00, 80: 408.33, 160: 816.67,  320: 1633.33}},
+    {"mcs": 9,  "mod": "256-QAM",  "snr": 27, "caps": {40: 216.67, 80: 453.70, 160: 907.41,  320: 1814.81}},
+    {"mcs": 10, "mod": "1024-QAM", "snr": 30, "caps": {40: 243.75, 80: 510.42, 160: 1020.83, 320: 2041.67}},
+    {"mcs": 11, "mod": "1024-QAM", "snr": 33, "caps": {40: 270.83, 80: 567.13, 160: 1134.26, 320: 2268.52}}
+]
+
+MCS_COLORS = {
+    0: '#ff0000', 1: '#ff4500', 2: '#ff8c00', 3: '#ffa500', 
+    4: '#ffd700', 5: '#ffff00', 6: '#adff2f', 7: '#7fff00', 
+    8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
+}
+
+# --- Data Persistence ---
+DATA_FILE = "ap_data.json"
+CPE_FILE = "cpe_data.json"
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
+    return []
+
+def save_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(st.session_state.aps, f)
+
+def load_cpes():
+    if os.path.exists(CPE_FILE):
+        with open(CPE_FILE, "r") as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
+    return []
+
+def save_cpes():
+    with open(CPE_FILE, "w") as f:
+        json.dump(st.session_state.cpes, f)
+
+# --- Spatial & Geometry Math ---
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate distance in meters between two lat/lon points."""
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlam = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def get_bearing(lat1, lon1, lat2, lon2):
+    """Calculate bearing from point 1 to point 2."""
+    dLon = math.radians(lon2 - lon1)
+    y = math.sin(dLon) * math.cos(math.radians(lat2))
+    x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dLon)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+def is_in_sector(bearing, ap):
+    """Check if a bearing falls within any of the AP's active sectors."""
+    start_angle = 0
+    sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+    for sector in sorted_sectors:
+        end_angle = start_angle + ap["beam_width"]
+        norm_start, norm_end = start_angle % 360, end_angle % 360
+        
+        if norm_start < norm_end:
+            if norm_start <= bearing <= norm_end: return True
+        else: # Handle 360 degree wrap-around (e.g., sector crosses North)
+            if bearing >= norm_start or bearing <= norm_end: return True
+        start_angle = end_angle
+    return False
+
+# --- Elevation APIs & Line of Sight ---
+def get_elevation_profile(lats, lons):
+    """Fetch elevation data using OpenTopoData, fallback to Open-Elevation."""
+    locations = "|".join([f"{lat},{lon}" for lat, lon in zip(lats, lons)])
+    
+    # 1. Try OpenTopoData
+    try:
+        res = requests.get(f"https://api.opentopodata.org/v1/srtm90m?locations={locations}", timeout=5)
+        if res.status_code == 200:
+            return [r['elevation'] for r in res.json()['results']]
+    except: pass
+    
+    # 2. Try Open-Elevation Fallback
+    try:
+        payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in zip(lats, lons)]}
+        res = requests.post("https://api.open-elevation.com/api/v1/lookup", json=payload, timeout=5)
+        if res.status_code == 200:
+            return [r['elevation'] for r in res.json()['results']]
+    except: pass
+    
+    # 3. Last Resort Fallback (Assume flat earth so app doesn't crash)
+    return [0] * len(lats)
+
+def check_line_of_sight(lat1, lon1, h1, lat2, lon2, h2):
+    """Checks if radio wave clears terrain between AP and CPE."""
+    num_points = 10 # Sample 10 points along the path
+    lats = [lat1 + (lat2 - lat1) * i / (num_points - 1) for i in range(num_points)]
+    lons = [lon1 + (lon2 - lon1) * i / (num_points - 1) for i in range(num_points)]
+    
+    elevations = get_elevation_profile(lats, lons)
+    
+    # Absolute height (ground elevation + building/tower height)
+    alt1 = elevations[0] + h1
+    alt2 = elevations[-1] + h2
+    
+    # Linear interpolation of the visual wave path
+    for i in range(1, num_points - 1):
+        wave_alt = alt1 + (alt2 - alt1) * i / (num_points - 1)
+        if elevations[i] >= wave_alt:
+            return False # Terrain blocks the signal
+    return True
+
+# --- External Queries ---
+def fetch_buildings_from_osm_poly(poly_str):
+    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json][timeout:25];
+    (
+      way["building"](poly:"{poly_str}");
+      relation["building"](poly:"{poly_str}");
+    );
+    out center;
+    """
+    try:
+        headers = {'User-Agent': 'PtMP-Planner/1.2'}
+        response = requests.get(overpass_url, params={'data': overpass_query}, headers=headers)
+        if response.status_code == 200:
+            return response.json().get('elements', []), None
+        return [], f"HTTP Error {response.status_code}"
+    except Exception as e:
+        return [], str(e)
+
+# --- Link Budget Math ---
+@st.cache_data
+def calculate_all_mcs_radii(lat, lon, f_GHz, tx_power, tx_gain, rx_gain, noise_figure, channel_bw, availability):
+    radii_results = {}
+    bw_hz = channel_bw * 1e6
+    noise_floor_dbm = -174 + (10 * math.log10(bw_hz)) + noise_figure
+    f = f_GHz * u.GHz
+    T = 15 * u.deg_C
+    P = 1013 * u.hPa
+    rho = 7.5 * u.g / u.m**3
+    gamma_g_qty = itur.models.itu676.gamma_exact(f, P, rho, T)
+    gamma_g = gamma_g_qty.value 
+    p = 100.0 - availability 
+    R_qty = itur.models.itu837.rainfall_rate(lat, lon, p)
+    gamma_r_qty = itur.models.itu838.rain_specific_attenuation(R_qty, f, 0, 0)
+    gamma_r = gamma_r_qty.value
+    
+    for mcs_index in range(12): 
+        mcs_data = MCS_TABLE[mcs_index]
+        rx_threshold = noise_floor_dbm + mcs_data["snr"]
+        min_d_km, max_d_km, best_d_km = 0.01, 50.0, 0.01
+        
+        for _ in range(40): 
+            mid_d = (min_d_km + max_d_km) / 2.0
+            fspl = 20 * math.log10(mid_d) + 20 * math.log10(f_GHz) + 92.45
+            total_loss = fspl + (gamma_g * mid_d) + (gamma_r * mid_d)
+            rx_power = tx_power + tx_gain + rx_gain - total_loss
+            if rx_power >= rx_threshold:
+                min_d_km = mid_d
+                best_d_km = mid_d
+            else:
+                max_d_km = mid_d
+                
+        radii_results[mcs_index] = {"radius_m": best_d_km * 1000.0, "capacity": mcs_data["caps"].get(channel_bw, 0), "mod": mcs_data["mod"]}
+    return radii_results
+
+def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
+    R = 6378137
+    lat_rad, lon_rad = math.radians(lat), math.radians(lon)
+    points = [(lat, lon)]
+    for angle in range(int(start_angle), int(end_angle) + 1, 5):
+        bearing = math.radians(angle)
+        lat_out = math.asin(math.sin(lat_rad) * math.cos(radius_m / R) + math.cos(lat_rad) * math.sin(radius_m / R) * math.cos(bearing))
+        lon_out = lon_rad + math.atan2(math.sin(bearing) * math.sin(radius_m / R) * math.cos(lat_rad), math.cos(radius_m / R) - math.sin(lat_rad) * math.sin(lat_out))
+        points.append((math.degrees(lat_out), math.degrees(lon_out)))
+    points.append((lat, lon))
+    return points
+
+# --- 1. Session State Initialization ---
+if 'aps' not in st.session_state: st.session_state.aps = load_data() 
+if 'ap_counter' not in st.session_state: st.session_state.ap_counter = len(st.session_state.aps) + 1 if st.session_state.aps else 1
+
+if 'cpes' not in st.session_state: st.session_state.cpes = load_cpes()
+if 'cpe_counter' not in st.session_state: st.session_state.cpe_counter = len(st.session_state.cpes) + 1 if st.session_state.cpes else 1
+
+if 'all_drawings' not in st.session_state: st.session_state.all_drawings = []
+if 'map_center' not in st.session_state: st.session_state.map_center = None
+if 'map_zoom' not in st.session_state: st.session_state.map_zoom = 13
+if 'map_key' not in st.session_state: st.session_state.map_key = 0
+
+def add_ap(lat, lon):
+    name = f"AP {st.session_state.ap_counter}"
+    st.session_state.ap_counter += 1
+    st.session_state.aps.append({
+        "name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "height": 10.0,
+        "tx_power": 23.0, "antenna_gain": 20.0, "channel_bw": 80, "num_sectors": 6, "beam_width": 60,
+        "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
+    })
+    save_data()
+
+def add_cpe(lat, lon, height=8.0):
+    st.session_state.cpes.append({
+        "name": f"CPE {st.session_state.cpe_counter}", 
+        "lat": round(float(lat), 6), "lon": round(float(lon), 6), 
+        "height": height, "ap": "None", "mcs": "N/A", "color": "#0000FF", "line": None
+    })
+    st.session_state.cpe_counter += 1
+    save_cpes()
+
+# --- 2. Main UI & Sidebar ---
+st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
+st.title("📡 Point-to-Multipoint Planning App")
+
+with st.sidebar:
+    st.header("Global Settings")
+    global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
+    availability_target = st.number_input("Availability Target (%)", value=99.9, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
+    min_mcs_display = st.selectbox("Minimum Displayed MCS", options=list(range(12)), index=0, format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})")
+    
+    col_cpe1, col_cpe2 = st.columns(2)
+    cpe_gain = col_cpe1.number_input("Global CPE Gain (dBi)", value=15.0, step=1.0)
+    cpe_nf = col_cpe2.number_input("CPE Noise Fig (dB)", value=7.0, step=0.5) 
+    
+    st.divider()
+
+    st.header("CPE Discovery & Assignment")
+    max_cpes = st.number_input("Max Buildings to Detect", value=64, min_value=1, step=10)
+    
+    col_btn1, col_btn2 = st.columns(2)
+    if col_btn1.button("🏗️ Detect Buildings", use_container_width=True):
+        polygons = [d for d in st.session_state.all_drawings if d["geometry"]["type"] in ["Polygon", "Rectangle"]]
+        if not polygons: st.warning("Draw a polygon first.")
+        else:
+            with st.spinner("Detecting buildings..."):
+                coords = polygons[-1]["geometry"]["coordinates"][0]
+                poly_str = " ".join([f"{pt[1]} {pt[0]}" for pt in coords])
+                lats, lons = [pt[1] for pt in coords], [pt[0] for pt in coords]
+                buildings, error = fetch_buildings_from_osm_poly(poly_str)
+                
+                if error: st.error(f"Error: {error}")
+                elif not buildings: st.warning("0 buildings found.")
+                else:
+                    added_count = 0
+                    for bldg in buildings:
+                        if added_count >= max_cpes: break
+                        tags, center = bldg.get('tags', {}), bldg.get('center', {})
+                        if not center: continue
+                        h = tags.get('height')
+                        if h:
+                            try: h = float(h.split()[0])
+                            except: h = 8.0
+                        elif tags.get('building:levels'):
+                            try: h = float(tags.get('building:levels')) * 3.5
+                            except: h = 8.0
+                        else: h = 8.0
+                            
+                        add_cpe(center['lat'], center['lon'], h)
+                        added_count += 1
+                        
+                    st.session_state.map_center = [(min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2]
+                    st.session_state.map_zoom = 16
+                    st.session_state.all_drawings = []
+                    st.session_state.map_key += 1 
+                    st.success(f"Added {added_count} buildings!")
+                    st.rerun()
+
+    # --- THE ASSIGNMENT ENGINE ---
+    if col_btn2.button("🔗 Assign CPEs to APs", type="primary", use_container_width=True):
+        if not st.session_state.aps:
+            st.error("No APs exist to assign CPEs to!")
+        else:
+            with st.spinner("Calculating Links & Checking Line of Sight..."):
+                # Pre-calculate AP radii to save time
+                ap_radii_cache = {}
+                for ap in st.session_state.aps:
+                    ap_radii_cache[ap['name']] = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target)
+
+                success_count = 0
+                for i, cpe in enumerate(st.session_state.cpes):
+                    valid_aps = []
+                    
+                    # 1. Filter APs by Distance and Sector
+                    for ap in st.session_state.aps:
+                        dist = haversine(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
+                        bearing = get_bearing(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
+                        
+                        # Max coverage radius is MCS 0
+                        max_radius = ap_radii_cache[ap['name']][0]['radius_m']
+                        
+                        if dist <= max_radius and is_in_sector(bearing, ap):
+                            valid_aps.append({"ap": ap, "dist": dist})
+                    
+                    # Sort valid APs by closest distance
+                    valid_aps.sort(key=lambda x: x["dist"])
+                    
+                    assigned = False
+                    # 2. Check Line of Sight for valid APs
+                    for candidate in valid_aps:
+                        ap = candidate["ap"]
+                        dist = candidate["dist"]
+                        
+                        has_los = check_line_of_sight(ap['lat'], ap['lon'], ap['height'], cpe['lat'], cpe['lon'], cpe['height'])
+                        
+                        if has_los:
+                            # 3. Find the best capacity tier
+                            best_mcs = 0
+                            capacity = 0
+                            radii_data = ap_radii_cache[ap['name']]
+                            for m_idx in range(11, -1, -1):
+                                if dist <= radii_data[m_idx]['radius_m']:
+                                    best_mcs = m_idx
+                                    capacity = radii_data[m_idx]['capacity']
+                                    break
+                                    
+                            st.session_state.cpes[i].update({
+                                "ap": ap['name'],
+                                "mcs": f"MCS {best_mcs} ({capacity}M)",
+                                "color": "#00FF00", # Green means successful link
+                                "line": [(ap['lat'], ap['lon']), (cpe['lat'], cpe['lon'])]
+                            })
+                            assigned = True
+                            success_count += 1
+                            break # Move to next CPE
+                    
+                    # If completely failed
+                    if not assigned:
+                        st.session_state.cpes[i].update({
+                            "ap": "Failed",
+                            "mcs": "N/A",
+                            "color": "#FF0000", # Red means blocked or out of range
+                            "line": None
+                        })
+                
+                save_cpes()
+                st.session_state.map_key += 1 # Force redraw to show lines
+                st.success(f"Assigned {success_count}/{len(st.session_state.cpes)} CPEs!")
+                st.rerun()
+
+    with st.expander("➕ Add CPE Manually"):
+        m_cpe_lat = st.number_input("CPE Latitude", value=32.1750, format="%.6f", key="m_cpe_lat")
+        m_cpe_lon = st.number_input("CPE Longitude", value=34.9069, format="%.6f", key="m_cpe_lon")
+        m_cpe_h = st.number_input("CPE Height (m)", value=8.0, step=1.0, key="m_cpe_h")
+        if st.button("Add CPE to Map"):
+            add_cpe(m_cpe_lat, m_cpe_lon, m_cpe_h)
+            st.session_state.map_center = [m_cpe_lat, m_cpe_lon]
+            st.session_state.map_key += 1
+            st.rerun()
+
+    with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=True):
+        if st.session_state.cpes:
+            if st.button("🗑️ Clear All Buildings", type="primary", use_container_width=True):
+                st.session_state.cpes, st.session_state.cpe_counter = [], 1
+                save_cpes()
+                st.session_state.map_key += 1
+                st.rerun()
+                
+            edited_cpes = st.data_editor(
+                st.session_state.cpes,
+                column_config={
+                    "name": "Name", 
+                    "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.5f"), 
+                    "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.5f"), 
+                    "height": st.column_config.NumberColumn("H(m)"),
+                    "ap": st.column_config.TextColumn("Assigned AP", disabled=True),
+                    "mcs": st.column_config.TextColumn("Capacity", disabled=True),
+                    "color": None, # Hide internal vars
+                    "line": None
+                },
+                hide_index=True, num_rows="dynamic", key="cpe_editor"
+            )
+            if json.dumps(edited_cpes) != json.dumps(st.session_state.cpes):
+                st.session_state.cpes = edited_cpes
+                save_cpes()
+                st.rerun()
+        else:
+            st.info("No CPEs added yet.")
+                
+    st.divider()
+
+    st.header("AP Management")
+    st.subheader("Existing APs")
+    for i, ap in enumerate(st.session_state.aps):
+        if "channel_bw" not in ap: ap["channel_bw"] = 80
+        with st.expander(ap["name"]):
+            st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}")
+            col1, col2 = st.columns(2)
+            st.session_state.aps[i]["lat"] = col1.number_input("Latitude", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
+            st.session_state.aps[i]["lon"] = col2.number_input("Longitude", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
+            col_h, col_bw = st.columns(2)
+            st.session_state.aps[i]["height"] = col_h.number_input("Height (m)", value=float(ap["height"]), step=1.0, key=f"h_{i}")
+            st.session_state.aps[i]["channel_bw"] = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
+            col3, col4 = st.columns(2)
+            st.session_state.aps[i]["tx_power"] = col3.number_input("Tx Power (dBm)", value=float(ap["tx_power"]), step=1.0, key=f"tx_{i}")
+            st.session_state.aps[i]["antenna_gain"] = col4.number_input("Ant. Gain (dBi)", value=float(ap["antenna_gain"]), step=1.0, key=f"gain_{i}")
+            st.session_state.aps[i]["num_sectors"] = col3.number_input("Sectors", value=int(ap["num_sectors"]), min_value=1, step=1, key=f"numsec_{i}")
+            st.session_state.aps[i]["beam_width"] = col4.number_input("Beam Width (°)", value=int(ap["beam_width"]), min_value=1, step=1, key=f"bw_{i}")
+            
+            current_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
+            if st.session_state.aps[i]["num_sectors"] > len(current_sectors):
+                num_channels_reuse = max(1, int(120 / st.session_state.aps[i]["beam_width"]))
+                for s_idx in range(len(current_sectors), st.session_state.aps[i]["num_sectors"]):
+                    current_sectors.append({"id": s_idx + 1, "channel": (s_idx % num_channels_reuse) + 1})
+            elif st.session_state.aps[i]["num_sectors"] < len(current_sectors):
+                current_sectors = current_sectors[:st.session_state.aps[i]["num_sectors"]]
+            
+            updated_sectors = []
+            sec_cols = st.columns(3)
+            for s_idx, sector in enumerate(current_sectors):
+                with sec_cols[s_idx % 3]:
+                    new_ch = st.number_input(f"Sec {s_idx+1} Ch", value=int(sector["channel"]), step=1, key=f"ch_{i}_{s_idx}")
+                    updated_sectors.append({"id": s_idx + 1, "channel": new_ch})
+            st.session_state.aps[i]["sectors"] = updated_sectors
+            
+            if st.button("🗑️ Delete AP", type="primary", key=f"del_{i}"):
+                st.session_state.aps.pop(i)
+                save_data()
+                st.rerun()
+    save_data()
+
+# --- 3. Clean Map Generation ---
+if st.session_state.map_center:
+    start_loc, zoom = st.session_state.map_center, st.session_state.map_zoom
+elif st.session_state.aps:
+    start_loc, zoom = [st.session_state.aps[0]["lat"], st.session_state.aps[0]["lon"]], 13
+else:
+    start_loc, zoom = [32.1750, 34.9069], 13
+
+m = folium.Map(location=start_loc, zoom_start=zoom, control_scale=True)
+
+for drawing in st.session_state.all_drawings:
+    if drawing["geometry"]["type"] in ["Polygon", "Rectangle"]:
+        folium.GeoJson(drawing, style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.2}).add_to(m)
+
+Draw(export=False, draw_options={'polyline': False, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': True, 'circlemarker': False}).add_to(m)
+
+for ap in st.session_state.aps:
+    mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target)
+    for mcs_level in range(12):
+        if mcs_level < min_mcs_display: continue
+        folium.Circle(location=[ap["lat"], ap["lon"]], radius=mcs_data[mcs_level]['radius_m'], color=MCS_COLORS[mcs_level], weight=1, fill=False, dash_array='3, 4').add_to(m)
+
+    start_angle = 0 
+    for idx, sector in enumerate(sorted(ap.get("sectors", []), key=lambda x: x["id"])):
+        end_angle = start_angle + ap["beam_width"]
+        for mcs_level in range(12):
+            if mcs_level < min_mcs_display: continue 
+            polygon_points = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[mcs_level]['radius_m'], start_angle, end_angle)
+            folium.Polygon(locations=polygon_points, stroke=False, fill=True, fill_color=MCS_COLORS[mcs_level], fill_opacity=0.15, tooltip=f"{ap['name']} Sec {sector['id']} - MCS {mcs_level}").add_to(m)
+        largest_polygon = get_sector_polygon(ap["lat"], ap["lon"], mcs_data[min_mcs_display]['radius_m'], start_angle, end_angle)
+        folium.PolyLine(locations=largest_polygon, color='black', weight=1, opacity=0.4).add_to(m)
+        start_angle = end_angle
+
+    folium.Marker([ap["lat"], ap["lon"]], popup=f"{ap['name']} ({global_freq}GHz)", tooltip=ap["name"], icon=folium.Icon(color="black", icon="wifi", prefix="fa")).add_to(m)
+
+# --- Render Assigned CPEs and Links ---
+for cpe in st.session_state.cpes:
+    # Use the color assigned by the logic (Blue=Unassigned, Green=Success, Red=Fail)
+    c_color = cpe.get("color", "#0000FF") 
+    folium.CircleMarker(
+        location=[cpe["lat"], cpe["lon"]], radius=4, color=c_color, fill=True, fill_opacity=1.0, 
+        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
+    ).add_to(m)
+    
+    # Draw the connection line if assigned
+    if cpe.get("line"):
+        folium.PolyLine(
+            locations=cpe["line"], color=c_color, weight=2, dash_array='5, 5', opacity=0.8,
+            tooltip=f"{cpe['name']} to {cpe['ap']} ({cpe['mcs']})"
+        ).add_to(m)
+
+legend_html = """
+<div style="position: absolute; bottom: 50px; left: 10px; width: 140px; background-color: rgba(255, 255, 255, 0.95); border: 1px solid grey; z-index: 9999; font-size: 11px; padding: 6px; border-radius: 4px; color: black !important; font-family: Arial, sans-serif;">
+<div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Capacity</div>
+"""
+for m_idx in range(11, min_mcs_display - 1, -1):
+    legend_html += f"""<div style="margin-bottom: 2px; line-height: 14px; white-space: nowrap;"><i style="background:{MCS_COLORS[m_idx]}; width: 10px; height: 10px; float: left; margin-right: 5px; border: 1px solid #777; border-radius: 2px;"></i>MCS {m_idx} ({MCS_TABLE[m_idx]['mod']})</div>"""
+legend_html += "</div>"
+m.get_root().html.add_child(folium.Element(legend_html))
+
+map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
+
+# --- 4. Handle Drawing Events ---
+if map_data and map_data.get("all_drawings") is not None:
+    current_drawings = map_data["all_drawings"]
+    st.session_state.all_drawings = current_drawings
+    
+    new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
+    if new_point:
+        lon, lat = new_point["geometry"]["coordinates"]
+        add_ap(lat, lon)
+        st.session_state.map_center = [lat, lon]
+        st.session_state.map_zoom = 15
+        st.session_state.all_drawings = []
+        st.session_state.map_key += 1
+        st.rerun()
