@@ -33,10 +33,6 @@ MCS_COLORS = {
     8: '#00ff00', 9: '#00fa9a', 10: '#00ced1', 11: '#0000ff'
 }
 
-# --- Data Persistence Constants (THE MISSING LINES) ---
-DATA_FILE = "ap_data.json"
-CPE_FILE = "cpe_data.json"
-
 # --- Export Generators (KML & PDF) ---
 def hex_to_kml_color(hex_str, opacity="7f"):
     h = hex_str.lstrip('#')
@@ -215,11 +211,17 @@ def get_sector_polygon(lat, lon, radius_m, start_angle, end_angle):
     return points
 
 # --- 1. Session State Initialization ---
+DATA_FILE = "ap_data.json"
+CPE_FILE = "cpe_data.json"
+
 if 'glob_freq' not in st.session_state: st.session_state.glob_freq = 26
 if 'glob_avail' not in st.session_state: st.session_state.glob_avail = 99.9
 if 'glob_min_mcs' not in st.session_state: st.session_state.glob_min_mcs = 0
 if 'glob_cpe_gain' not in st.session_state: st.session_state.glob_cpe_gain = 15.0
 if 'glob_cpe_nf' not in st.session_state: st.session_state.glob_cpe_nf = 7.0
+
+# Initialize the new marker mode toggle
+if 'marker_mode' not in st.session_state: st.session_state.marker_mode = "Drop AP"
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -273,8 +275,18 @@ st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
-    st.header("Global Settings")
     
+    # --- NEW: MAP TOOL TOGGLE ---
+    st.info("🗺️ **Map Pin Tool Controls:**")
+    st.session_state.marker_mode = st.radio(
+        "Select what the 📍 Pin icon draws on the map:", 
+        ["Drop AP", "Drop CPE"], 
+        horizontal=True,
+        help="Select a mode, then click the marker tool on the map to place items."
+    )
+    st.divider()
+    
+    st.header("Global Settings")
     st.session_state.glob_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=[5, 26, 60].index(st.session_state.glob_freq))
     st.session_state.glob_avail = st.number_input("Availability Target (%)", value=st.session_state.glob_avail, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
     st.session_state.glob_min_mcs = st.selectbox("Minimum Displayed MCS", options=list(range(12)), index=st.session_state.glob_min_mcs, format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})")
@@ -381,17 +393,6 @@ with st.sidebar:
                 st.session_state.map_key += 1 
                 st.success(f"Assigned {success_count}/{len(st.session_state.cpes)} CPEs!")
                 st.rerun()
-
-    with st.expander("➕ Add CPE Manually"):
-        m_cpe_lat = st.number_input("CPE Latitude", value=32.1750, format="%.6f", key="m_cpe_lat")
-        m_cpe_lon = st.number_input("CPE Longitude", value=34.9069, format="%.6f", key="m_cpe_lon")
-        m_cpe_h = st.number_input("CPE Height (m)", value=8.0, step=1.0, key="m_cpe_h")
-        if st.button("Add CPE to Map"):
-            add_cpe(m_cpe_lat, m_cpe_lon, m_cpe_h)
-            save_cpes()
-            st.session_state.map_center = [m_cpe_lat, m_cpe_lon]
-            st.session_state.map_key += 1
-            st.rerun()
 
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=False):
         if st.session_state.cpes:
@@ -577,7 +578,14 @@ if map_data and map_data.get("all_drawings") is not None:
     new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
     if new_point:
         lon, lat = new_point["geometry"]["coordinates"]
-        add_ap(lat, lon)
+        
+        # NEW: Check what mode the user selected before acting on the pin drop!
+        if st.session_state.marker_mode == "Drop AP":
+            add_ap(lat, lon)
+        else:
+            add_cpe(lat, lon, height=8.0) # Uses default height of 8m
+            save_cpes()
+            
         st.session_state.map_center = [lat, lon]
         st.session_state.map_zoom = 15
         st.session_state.all_drawings = []
