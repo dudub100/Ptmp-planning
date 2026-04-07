@@ -35,17 +35,14 @@ MCS_COLORS = {
 
 # --- Export Generators (KML & PDF) ---
 def hex_to_kml_color(hex_str, opacity="7f"):
-    """Converts #RRGGBB to KML format AABBGGRR"""
     h = hex_str.lstrip('#')
     return f"{opacity}{h[4:6]}{h[2:4]}{h[0:2]}"
 
 def generate_kml():
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', '<name>PtMP Network Plan</name>']
     
-    # Draw APs and Sectors
     for ap in st.session_state.aps:
         kml.append(f'<Placemark><name>{ap["name"]}</name><Point><coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates></Point></Placemark>')
-        
         mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
         start_angle = 0 
         for sector in sorted(ap.get("sectors", []), key=lambda x: x["id"]):
@@ -62,7 +59,6 @@ def generate_kml():
                 """)
             start_angle = end_angle
 
-    # Draw CPEs and Links
     for cpe in st.session_state.cpes:
         cpe_color = hex_to_kml_color(cpe.get("color", "#0000FF"), "ff")
         kml.append(f"""
@@ -70,7 +66,6 @@ def generate_kml():
         <Style><IconStyle><color>{cpe_color}</color><scale>1.0</scale></IconStyle></Style>
         <Point><coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates></Point></Placemark>
         """)
-        # THE FIX: Strictly verify line data
         if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
             line_coords = f"{cpe['line'][0][1]},{cpe['line'][0][0]},0 {cpe['line'][1][1]},{cpe['line'][1][0]},0"
             kml.append(f"""
@@ -87,22 +82,17 @@ def generate_pdf():
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(200, 10, txt=f"PtMP Network Planning Report - {datetime.now().strftime('%Y-%m-%d')}", ln=True, align='C')
-    
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 10, txt="Base Stations (APs)", ln=True)
     pdf.set_font("Arial", '', 10)
     for ap in st.session_state.aps:
         pdf.cell(200, 8, txt=f"Name: {ap['name']} | Lat: {ap['lat']} | Lon: {ap['lon']} | H: {ap['height']}m | Tx: {ap['tx_power']}dBm | Gain: {ap['antenna_gain']}dBi | BW: {ap['channel_bw']}MHz", ln=True)
-    
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 10, txt="CPE Assignments", ln=True)
     pdf.set_font("Arial", '', 10)
     for cpe in st.session_state.cpes:
-        ap_name = cpe.get('ap', 'None')
-        mcs = cpe.get('mcs', 'N/A')
-        pdf.cell(200, 8, txt=f"CPE: {cpe['name']} | H: {cpe['height']}m | AP: {ap_name} | Tier: {mcs}", ln=True)
-        
+        pdf.cell(200, 8, txt=f"CPE: {cpe['name']} | H: {cpe['height']}m | AP: {cpe.get('ap', 'None')} | Tier: {cpe.get('mcs', 'N/A')}", ln=True)
     return pdf.output(dest='S').encode('latin-1')
 
 # --- Spatial & Geometry Math ---
@@ -227,11 +217,30 @@ if 'glob_min_mcs' not in st.session_state: st.session_state.glob_min_mcs = 0
 if 'glob_cpe_gain' not in st.session_state: st.session_state.glob_cpe_gain = 15.0
 if 'glob_cpe_nf' not in st.session_state: st.session_state.glob_cpe_nf = 7.0
 
-if 'aps' not in st.session_state: st.session_state.aps = []
-if 'ap_counter' not in st.session_state: st.session_state.ap_counter = 1
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
+    return []
 
-if 'cpes' not in st.session_state: st.session_state.cpes = []
-if 'cpe_counter' not in st.session_state: st.session_state.cpe_counter = 1
+def load_cpes():
+    if os.path.exists(CPE_FILE):
+        with open(CPE_FILE, "r") as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
+    return []
+
+def save_data():
+    with open(DATA_FILE, "w") as f: json.dump(st.session_state.aps, f)
+
+def save_cpes():
+    with open(CPE_FILE, "w") as f: json.dump(st.session_state.cpes, f)
+
+if 'aps' not in st.session_state: st.session_state.aps = load_data()
+if 'ap_counter' not in st.session_state: st.session_state.ap_counter = max([int(a['name'].split()[-1]) for a in st.session_state.aps if a['name'].split()[-1].isdigit()] + [0]) + 1
+if 'cpes' not in st.session_state: st.session_state.cpes = load_cpes()
+if 'cpe_counter' not in st.session_state: st.session_state.cpe_counter = max([int(c['name'].split()[-1]) for c in st.session_state.cpes if c['name'].split()[-1].isdigit()] + [0]) + 1
 
 if 'all_drawings' not in st.session_state: st.session_state.all_drawings = []
 if 'map_center' not in st.session_state: st.session_state.map_center = None
@@ -261,7 +270,6 @@ st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
     st.header("Global Settings")
-    
     st.session_state.glob_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=[5, 26, 60].index(st.session_state.glob_freq))
     st.session_state.glob_avail = st.number_input("Availability Target (%)", value=st.session_state.glob_avail, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
     st.session_state.glob_min_mcs = st.selectbox("Minimum Displayed MCS", options=list(range(12)), index=st.session_state.glob_min_mcs, format_func=lambda x: f"MCS {x} ({MCS_TABLE[x]['mod']})")
@@ -306,6 +314,7 @@ with st.sidebar:
                         add_cpe(center['lat'], center['lon'], h)
                         added_count += 1
                         
+                    save_cpes()
                     st.session_state.map_center = [(min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2]
                     st.session_state.map_zoom = 16
                     st.session_state.all_drawings = []
@@ -363,6 +372,7 @@ with st.sidebar:
                             "ap": "Failed", "mcs": "N/A", "color": "#555555", "line": None
                         })
                 
+                save_cpes()
                 st.session_state.map_key += 1 
                 st.success(f"Assigned {success_count}/{len(st.session_state.cpes)} CPEs!")
                 st.rerun()
@@ -373,24 +383,46 @@ with st.sidebar:
         m_cpe_h = st.number_input("CPE Height (m)", value=8.0, step=1.0, key="m_cpe_h")
         if st.button("Add CPE to Map"):
             add_cpe(m_cpe_lat, m_cpe_lon, m_cpe_h)
+            save_cpes()
             st.session_state.map_center = [m_cpe_lat, m_cpe_lon]
             st.session_state.map_key += 1
             st.rerun()
 
+    # --- THE FIX: Decoupling internal map data from the UI Table ---
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=False):
         if st.session_state.cpes:
             if st.button("🗑️ Clear All Buildings", type="primary", use_container_width=True):
                 st.session_state.cpes, st.session_state.cpe_counter = [], 1
+                save_cpes()
                 st.session_state.map_key += 1
                 st.rerun()
                 
+            # Create a safe copy of the data that EXCLUDES 'color' and 'line' so Streamlit doesn't wipe them
+            safe_cpes = [{"name": c["name"], "lat": c["lat"], "lon": c["lon"], "height": c["height"], "ap": c.get("ap", "None"), "mcs": c.get("mcs", "N/A")} for c in st.session_state.cpes]
+            
             edited_cpes = st.data_editor(
-                st.session_state.cpes,
-                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.5f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.5f"), "height": st.column_config.NumberColumn("H(m)"), "ap": st.column_config.TextColumn("Assigned AP", disabled=True), "mcs": st.column_config.TextColumn("Capacity", disabled=True), "color": None, "line": None},
+                safe_cpes,
+                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.5f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.5f"), "height": st.column_config.NumberColumn("H(m)"), "ap": st.column_config.TextColumn("Assigned AP", disabled=True), "mcs": st.column_config.TextColumn("Capacity", disabled=True)},
                 hide_index=True, num_rows="dynamic", key="cpe_editor"
             )
-            if json.dumps(edited_cpes) != json.dumps(st.session_state.cpes):
-                st.session_state.cpes = edited_cpes
+            
+            # If the user edited the table, carefully merge the changes back WITHOUT destroying lines
+            if json.dumps(safe_cpes) != json.dumps(edited_cpes):
+                new_cpes = []
+                for edited in edited_cpes:
+                    # Find original match to keep internal data safe
+                    orig = next((c for c in st.session_state.cpes if c["lat"] == edited["lat"] and c["lon"] == edited["lon"]), None)
+                    if orig:
+                        orig["name"] = edited["name"]
+                        orig["height"] = edited["height"]
+                        new_cpes.append(orig)
+                    else:
+                        new_cpes.append({
+                            "name": edited["name"], "lat": edited.get("lat", 0.0), "lon": edited.get("lon", 0.0), 
+                            "height": edited.get("height", 8.0), "ap": "None", "mcs": "N/A", "color": "#0000FF", "line": None
+                        })
+                st.session_state.cpes = new_cpes
+                save_cpes()
                 st.rerun()
         else:
             st.info("No CPEs added yet.")
@@ -433,10 +465,10 @@ with st.sidebar:
             
             if st.button("🗑️ Delete", type="primary", key=f"del_{i}"):
                 st.session_state.aps.pop(i)
+                save_data()
                 st.rerun()
             st.markdown("---")
 
-    # --- Save, Load & Export Module ---
     st.divider()
     st.header("💾 Save, Load & Export")
     
@@ -464,9 +496,9 @@ with st.sidebar:
             st.session_state.cpes = data.get("cpes", [])
             
             ap_ids = [int(a['name'].split()[-1]) for a in st.session_state.aps if a['name'].split()[-1].isdigit()]
-            st.session_state.ap_counter = max(ap_ids + [0]) + 1
+            st.session_state.ap_counter = max(ap_ids + [0]) + 1 if ap_ids else 1
             cpe_ids = [int(c['name'].split()[-1]) for c in st.session_state.cpes if c['name'].split()[-1].isdigit()]
-            st.session_state.cpe_counter = max(cpe_ids + [0]) + 1
+            st.session_state.cpe_counter = max(cpe_ids + [0]) + 1 if cpe_ids else 1
             
             st.session_state.map_key += 1
             st.rerun()
@@ -476,7 +508,6 @@ with st.sidebar:
 
     pdf_data = generate_pdf()
     st.download_button(label="4️⃣ Download PDF Report", data=pdf_data, file_name="ptmp_report.pdf", mime="application/pdf", use_container_width=True)
-
 
 # --- 3. Clean Map Generation ---
 if st.session_state.map_center:
@@ -520,7 +551,6 @@ for cpe in st.session_state.cpes:
         tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
     ).add_to(m)
     
-    # THE FIX: Safely verify the line structure before Folium renders it
     if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
         folium.PolyLine(
             locations=cpe["line"], color=c_color, weight=2, dash_array='5, 5', opacity=0.8,
