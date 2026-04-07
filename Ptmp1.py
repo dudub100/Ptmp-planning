@@ -1,4 +1,3 @@
-import streamlit as st
 import folium
 from folium.plugins import Draw
 from streamlit_folium import st_folium
