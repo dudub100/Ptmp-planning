@@ -44,7 +44,7 @@ def generate_kml():
     for ap in st.session_state.aps:
         kml.append(f'<Placemark><name>{ap["name"]}</name><Point><coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates></Point></Placemark>')
         mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
-        start_angle = 0 
+        start_angle = ap.get("azimuth", 0) 
         for sector in sorted(ap.get("sectors", []), key=lambda x: x["id"]):
             end_angle = start_angle + ap["beam_width"]
             for mcs_level in range(12):
@@ -86,7 +86,8 @@ def generate_pdf():
     pdf.cell(200, 10, txt="Base Stations (APs)", ln=True)
     pdf.set_font("Arial", '', 10)
     for ap in st.session_state.aps:
-        pdf.cell(200, 8, txt=f"Name: {ap['name']} | Lat: {ap['lat']} | Lon: {ap['lon']} | H: {ap['height']}m | Tx: {ap['tx_power']}dBm | Gain: {ap['antenna_gain']}dBi | BW: {ap['channel_bw']}MHz", ln=True)
+        pdf.cell(200, 8, txt=f"Name: {ap['name']} | Lat: {ap['lat']} | Lon: {ap['lon']} | Azimuth: {ap.get('azimuth', 0)}° | H: {ap['height']}m", ln=True)
+        pdf.cell(200, 8, txt=f"    Tx: {ap['tx_power']}dBm | Gain: {ap['antenna_gain']}dBi | BW: {ap['channel_bw']}MHz | Sec: {ap['num_sectors']}x{ap['beam_width']}°", ln=True)
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 10, txt="CPE Assignments", ln=True)
@@ -110,14 +111,15 @@ def get_bearing(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 def is_in_sector(bearing, ap):
-    start_angle = 0
+    # UPDATED: Sector checking now accounts for the AP's rotated Azimuth
+    start_angle = ap.get("azimuth", 0)
     sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
     for sector in sorted_sectors:
         end_angle = start_angle + ap["beam_width"]
         norm_start, norm_end = start_angle % 360, end_angle % 360
         if norm_start < norm_end:
             if norm_start <= bearing <= norm_end: return True
-        else:
+        else: # Handle wrapping past North (360 degrees)
             if bearing >= norm_start or bearing <= norm_end: return True
         start_angle = end_angle
     return False
@@ -219,8 +221,6 @@ if 'glob_avail' not in st.session_state: st.session_state.glob_avail = 99.9
 if 'glob_min_mcs' not in st.session_state: st.session_state.glob_min_mcs = 0
 if 'glob_cpe_gain' not in st.session_state: st.session_state.glob_cpe_gain = 15.0
 if 'glob_cpe_nf' not in st.session_state: st.session_state.glob_cpe_nf = 7.0
-
-# Initialize the new marker mode toggle
 if 'marker_mode' not in st.session_state: st.session_state.marker_mode = "Drop AP"
 
 def load_data():
@@ -259,6 +259,7 @@ def add_ap(lat, lon):
     st.session_state.aps.append({
         "name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "height": 10.0,
         "tx_power": 23.0, "antenna_gain": 20.0, "channel_bw": 80, "num_sectors": 6, "beam_width": 60,
+        "azimuth": 0, # NEW: Default azimuth to 0 (North)
         "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
     })
 
@@ -275,14 +276,11 @@ st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
-    
-    # --- NEW: MAP TOOL TOGGLE ---
     st.info("🗺️ **Map Pin Tool Controls:**")
     st.session_state.marker_mode = st.radio(
         "Select what the 📍 Pin icon draws on the map:", 
         ["Drop AP", "Drop CPE"], 
-        horizontal=True,
-        help="Select a mode, then click the marker tool on the map to place items."
+        horizontal=True
     )
     st.divider()
     
@@ -355,6 +353,8 @@ with st.sidebar:
                         dist = haversine(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
                         bearing = get_bearing(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
                         max_radius = ap_radii_cache[ap['name']][0]['radius_m']
+                        
+                        # Uses upgraded is_in_sector that accounts for rotation
                         if dist <= max_radius and is_in_sector(bearing, ap):
                             valid_aps.append({"ap": ap, "dist": dist})
                     
@@ -393,6 +393,17 @@ with st.sidebar:
                 st.session_state.map_key += 1 
                 st.success(f"Assigned {success_count}/{len(st.session_state.cpes)} CPEs!")
                 st.rerun()
+
+    with st.expander("➕ Add CPE Manually"):
+        m_cpe_lat = st.number_input("CPE Latitude", value=32.1750, format="%.6f", key="m_cpe_lat")
+        m_cpe_lon = st.number_input("CPE Longitude", value=34.9069, format="%.6f", key="m_cpe_lon")
+        m_cpe_h = st.number_input("CPE Height (m)", value=8.0, step=1.0, key="m_cpe_h")
+        if st.button("Add CPE to Map"):
+            add_cpe(m_cpe_lat, m_cpe_lon, m_cpe_h)
+            save_cpes()
+            st.session_state.map_center = [m_cpe_lat, m_cpe_lon]
+            st.session_state.map_key += 1
+            st.rerun()
 
     with st.expander(f"🏠 Managed CPEs ({len(st.session_state.cpes)})", expanded=False):
         if st.session_state.cpes:
@@ -437,6 +448,10 @@ with st.sidebar:
             if "channel_bw" not in ap: ap["channel_bw"] = 80
             st.markdown(f"**{ap['name']}**")
             st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}", label_visibility="collapsed")
+            
+            # --- NEW: Azimuth Slider ---
+            st.session_state.aps[i]["azimuth"] = st.slider("Azimuth/Rotation (°)", min_value=0, max_value=359, value=int(ap.get("azimuth", 0)), step=1, key=f"azi_{i}")
+            
             col1, col2 = st.columns(2)
             st.session_state.aps[i]["lat"] = col1.number_input("Lat", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
             st.session_state.aps[i]["lon"] = col2.number_input("Lon", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
@@ -529,11 +544,14 @@ Draw(export=False, draw_options={'polyline': False, 'polygon': True, 'rectangle'
 
 for ap in st.session_state.aps:
     mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
+    
+    # NEW: Start the map drawing at the AP's azimuth
+    start_angle = ap.get("azimuth", 0) 
+    
     for mcs_level in range(12):
         if mcs_level < st.session_state.glob_min_mcs: continue
         folium.Circle(location=[ap["lat"], ap["lon"]], radius=mcs_data[mcs_level]['radius_m'], color=MCS_COLORS[mcs_level], weight=1, fill=False, dash_array='3, 4').add_to(m)
 
-    start_angle = 0 
     for idx, sector in enumerate(sorted(ap.get("sectors", []), key=lambda x: x["id"])):
         end_angle = start_angle + ap["beam_width"]
         for mcs_level in range(12):
@@ -578,12 +596,10 @@ if map_data and map_data.get("all_drawings") is not None:
     new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
     if new_point:
         lon, lat = new_point["geometry"]["coordinates"]
-        
-        # NEW: Check what mode the user selected before acting on the pin drop!
         if st.session_state.marker_mode == "Drop AP":
             add_ap(lat, lon)
         else:
-            add_cpe(lat, lon, height=8.0) # Uses default height of 8m
+            add_cpe(lat, lon, height=8.0)
             save_cpes()
             
         st.session_state.map_center = [lat, lon]
