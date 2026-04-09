@@ -90,10 +90,10 @@ def generate_pdf():
         pdf.cell(200, 8, txt=f"    Tx: {ap['tx_power']}dBm | Gain: {ap['antenna_gain']}dBi | BW: {ap['channel_bw']}MHz | Sec: {ap['num_sectors']}x{ap['beam_width']}°", ln=True)
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="CPE Assignments", ln=True)
+    pdf.cell(200, 10, txt="CPE Assignments & Link Status", ln=True)
     pdf.set_font("Arial", '', 10)
     for cpe in st.session_state.cpes:
-        pdf.cell(200, 8, txt=f"CPE: {cpe['name']} | H: {cpe['height']}m | AP: {cpe.get('ap', 'None')} | Tier: {cpe.get('mcs', 'N/A')}", ln=True)
+        pdf.cell(200, 8, txt=f"CPE: {cpe['name']} | H: {cpe['height']}m | AP: {cpe.get('ap', 'None')} | Status: {cpe.get('mcs', 'N/A')}", ln=True)
     return pdf.output(dest='S').encode('latin-1')
 
 # --- Spatial & Geometry Math ---
@@ -111,7 +111,6 @@ def get_bearing(lat1, lon1, lat2, lon2):
     return (math.degrees(math.atan2(y, x)) + 360) % 360
 
 def is_in_sector(bearing, ap):
-    # UPDATED: Sector checking now accounts for the AP's rotated Azimuth
     start_angle = ap.get("azimuth", 0)
     sorted_sectors = sorted(ap.get("sectors", []), key=lambda x: x["id"])
     for sector in sorted_sectors:
@@ -119,7 +118,7 @@ def is_in_sector(bearing, ap):
         norm_start, norm_end = start_angle % 360, end_angle % 360
         if norm_start < norm_end:
             if norm_start <= bearing <= norm_end: return True
-        else: # Handle wrapping past North (360 degrees)
+        else:
             if bearing >= norm_start or bearing <= norm_end: return True
         start_angle = end_angle
     return False
@@ -259,7 +258,7 @@ def add_ap(lat, lon):
     st.session_state.aps.append({
         "name": name, "lat": round(float(lat), 6), "lon": round(float(lon), 6), "height": 10.0,
         "tx_power": 23.0, "antenna_gain": 20.0, "channel_bw": 80, "num_sectors": 6, "beam_width": 60,
-        "azimuth": 0, # NEW: Default azimuth to 0 (North)
+        "azimuth": 0,
         "sectors": [{"id": i+1, "channel": (i % 2) + 1} for i in range(6)]
     })
 
@@ -337,6 +336,7 @@ with st.sidebar:
                     st.success(f"Added {added_count} buildings!")
                     st.rerun()
 
+    # --- UPGRADED ASSIGNMENT ENGINE: Tracking Failure Reasons ---
     if col_btn2.button("🔗 Assign CPEs", type="primary", use_container_width=True):
         if not st.session_state.aps:
             st.error("No APs exist to assign CPEs to!")
@@ -349,18 +349,23 @@ with st.sidebar:
                 success_count = 0
                 for i, cpe in enumerate(st.session_state.cpes):
                     valid_aps = []
+                    in_range_any = False
+                    
                     for ap in st.session_state.aps:
                         dist = haversine(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
                         bearing = get_bearing(ap['lat'], ap['lon'], cpe['lat'], cpe['lon'])
                         max_radius = ap_radii_cache[ap['name']][0]['radius_m']
                         
-                        # Uses upgraded is_in_sector that accounts for rotation
-                        if dist <= max_radius and is_in_sector(bearing, ap):
-                            valid_aps.append({"ap": ap, "dist": dist})
+                        if dist <= max_radius:
+                            in_range_any = True
+                            if is_in_sector(bearing, ap):
+                                valid_aps.append({"ap": ap, "dist": dist})
                     
                     valid_aps.sort(key=lambda x: x["dist"])
                     
                     assigned = False
+                    los_failed = False
+                    
                     for candidate in valid_aps:
                         ap = candidate["ap"]
                         dist = candidate["dist"]
@@ -383,10 +388,20 @@ with st.sidebar:
                             assigned = True
                             success_count += 1
                             break
+                        else:
+                            los_failed = True
                     
                     if not assigned:
+                        # Determine specific failure reason
+                        if los_failed:
+                            fail_reason = "Blocked (No LoS)"
+                        elif in_range_any:
+                            fail_reason = "Outside Sector"
+                        else:
+                            fail_reason = "Out of Range"
+                            
                         st.session_state.cpes[i].update({
-                            "ap": "Failed", "mcs": "N/A", "color": "#555555", "line": None
+                            "ap": "Failed", "mcs": fail_reason, "color": "#555555", "line": None
                         })
                 
                 save_cpes()
@@ -417,7 +432,7 @@ with st.sidebar:
             
             edited_cpes = st.data_editor(
                 safe_cpes,
-                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.5f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.5f"), "height": st.column_config.NumberColumn("H(m)"), "ap": st.column_config.TextColumn("Assigned AP", disabled=True), "mcs": st.column_config.TextColumn("Capacity", disabled=True)},
+                column_config={"name": "Name", "lat": st.column_config.NumberColumn("Lat", disabled=True, format="%.5f"), "lon": st.column_config.NumberColumn("Lon", disabled=True, format="%.5f"), "height": st.column_config.NumberColumn("H(m)"), "ap": st.column_config.TextColumn("Assigned AP", disabled=True), "mcs": st.column_config.TextColumn("Status/Capacity", disabled=True)},
                 hide_index=True, num_rows="dynamic", key="cpe_editor"
             )
             
@@ -448,10 +463,7 @@ with st.sidebar:
             if "channel_bw" not in ap: ap["channel_bw"] = 80
             st.markdown(f"**{ap['name']}**")
             st.session_state.aps[i]["name"] = st.text_input("Name", value=ap["name"], key=f"name_{i}", label_visibility="collapsed")
-            
-            # --- NEW: Azimuth Slider ---
             st.session_state.aps[i]["azimuth"] = st.slider("Azimuth/Rotation (°)", min_value=0, max_value=359, value=int(ap.get("azimuth", 0)), step=1, key=f"azi_{i}")
-            
             col1, col2 = st.columns(2)
             st.session_state.aps[i]["lat"] = col1.number_input("Lat", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
             st.session_state.aps[i]["lon"] = col2.number_input("Lon", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
@@ -545,7 +557,6 @@ Draw(export=False, draw_options={'polyline': False, 'polygon': True, 'rectangle'
 for ap in st.session_state.aps:
     mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
     
-    # NEW: Start the map drawing at the AP's azimuth
     start_angle = ap.get("azimuth", 0) 
     
     for mcs_level in range(12):
@@ -564,11 +575,18 @@ for ap in st.session_state.aps:
 
     folium.Marker([ap["lat"], ap["lon"]], popup=f"{ap['name']} ({st.session_state.glob_freq}GHz)", tooltip=ap["name"], icon=folium.Icon(color="black", icon="wifi", prefix="fa")).add_to(m)
 
+# --- UPGRADED CPE MAP TOOLTIPS ---
 for cpe in st.session_state.cpes:
     c_color = cpe.get("color", "#0000FF") 
+    
+    # Append the reason/status to the tooltip so it's visible on hover!
+    tooltip_text = f"{cpe['name']} (H: {cpe['height']}m)"
+    if cpe.get("mcs") and cpe.get("mcs") != "N/A":
+        tooltip_text += f" | {cpe['mcs']}"
+        
     folium.CircleMarker(
         location=[cpe["lat"], cpe["lon"]], radius=5, color="black", weight=1, fill=True, fill_color=c_color, fill_opacity=1.0, 
-        tooltip=f"{cpe['name']} (H: {cpe['height']}m)"
+        tooltip=tooltip_text
     ).add_to(m)
     
     if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
