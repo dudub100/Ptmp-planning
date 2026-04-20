@@ -67,61 +67,54 @@ def get_distance(lat1, lon1, lat2, lon2):
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
 
 def generate_kml():
-    """Generates a KML string with APs, CPEs, and 3D LoS connection links."""
+    """Generates a strict, OGC-compliant 3D KML string."""
     kml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<kml xmlns="http://www.opengis.net/kml/2.2">',
         '  <Document>',
         '    <name>PtMP Network Plan</name>',
-        '    <description>Exported from PtMP Planner Pro</description>'
+        '    <description>Exported from PtMP Planner Pro</description>',
+        
+        # --- Define Styles properly at the Document level ---
+        '    <Style id="ap_style">',
+        '      <IconStyle><color>ff0000ff</color><scale>1.2</scale></IconStyle>',
+        '      <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>',
+        '    </Style>',
+        '    <Style id="cpe_style">',
+        '      <IconStyle><color>ffff0000</color><scale>1.0</scale></IconStyle>',
+        '      <LineStyle><color>ffff0000</color><width>2</width></LineStyle>',
+        '    </Style>',
+        '    <Style id="link_style">',
+        '      <LineStyle><color>7f00ffff</color><width>2</width></LineStyle>',
+        '    </Style>'
     ]
 
     # Add Access Points (APs)
     for ap in st.session_state.aps:
-        lon, lat, h = ap["lon"], ap["lat"], ap["height"]
         kml.extend([
             '    <Placemark>',
             f'      <name>{ap["name"]}</name>',
             f'      <description>Tx Power: {ap["tx_power"]} dBm\nAntenna Gain: {ap["antenna_gain"]} dBi</description>',
-            '      <Style>',
-            '        <IconStyle><color>ff0000ff</color></IconStyle>',
-            '        <LineStyle><color>ff0000ff</color><width>3</width></LineStyle>',
-            '      </Style>',
-            '      <MultiGeometry>',
-            '        <Point>',
-            '          <altitudeMode>relativeToGround</altitudeMode>',
-            f'          <coordinates>{lon},{lat},{h}</coordinates>',
-            '        </Point>',
-            '        <LineString>',
-            '          <extrude>1</extrude>',
-            '          <altitudeMode>relativeToGround</altitudeMode>',
-            f'          <coordinates>{lon},{lat},0 {lon},{lat},{h}</coordinates>',
-            '        </LineString>',
-            '      </MultiGeometry>',
+            '      <styleUrl>#ap_style</styleUrl>',
+            '      <Point>',
+            '        <extrude>1</extrude>',
+            '        <altitudeMode>relativeToGround</altitudeMode>',
+            f'        <coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates>',
+            '      </Point>',
             '    </Placemark>'
         ])
 
     # Add Customer Premises Equipment (CPEs)
     for cpe in st.session_state.cpes:
-        lon, lat, h = cpe["lon"], cpe["lat"], cpe["height"]
         kml.extend([
             '    <Placemark>',
             f'      <name>{cpe["name"]}</name>',
-            '      <Style>',
-            '        <IconStyle><color>ffff0000</color></IconStyle>',
-            '        <LineStyle><color>ffff0000</color><width>2</width></LineStyle>',
-            '      </Style>',
-            '      <MultiGeometry>',
-            '        <Point>',
-            '          <altitudeMode>relativeToGround</altitudeMode>',
-            f'          <coordinates>{lon},{lat},{h}</coordinates>',
-            '        </Point>',
-            '        <LineString>',
-            '          <extrude>1</extrude>',
-            '          <altitudeMode>relativeToGround</altitudeMode>',
-            f'          <coordinates>{lon},{lat},0 {lon},{lat},{h}</coordinates>',
-            '        </LineString>',
-            '      </MultiGeometry>',
+            '      <styleUrl>#cpe_style</styleUrl>',
+            '      <Point>',
+            '        <extrude>1</extrude>',
+            '        <altitudeMode>relativeToGround</altitudeMode>',
+            f'        <coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
+            '      </Point>',
             '    </Placemark>'
         ])
 
@@ -133,13 +126,9 @@ def generate_kml():
             kml.extend([
                 '    <Placemark>',
                 f'      <name>Link: {closest_ap["name"]} to {cpe["name"]}</name>',
-                '      <Style>',
-                '        <LineStyle>',
-                '          <color>7f00ffff</color>', # Yellow, semi-transparent line
-                '          <width>2</width>',
-                '        </LineStyle>',
-                '      </Style>',
+                '      <styleUrl>#link_style</styleUrl>',
                 '      <LineString>',
+                '        <extrude>0</extrude>',
                 '        <altitudeMode>relativeToGround</altitudeMode>',
                 f'        <coordinates>{closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]} {cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
                 '      </LineString>',
