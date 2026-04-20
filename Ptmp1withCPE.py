@@ -57,9 +57,17 @@ def save_cpes():
     with open(CPE_FILE, "w") as f:
         json.dump(st.session_state.cpes, f)
 
-# --- KML Generation ---
+# --- Helper & KML Generation ---
+def get_distance(lat1, lon1, lat2, lon2):
+    """Calculates geographical distance between two points."""
+    R = 6378137 
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
+
 def generate_kml():
-    """Generates a KML string containing all APs and CPEs with relative heights."""
+    """Generates a KML string with APs, CPEs, and 3D LoS connection links."""
     kml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<kml xmlns="http://www.opengis.net/kml/2.2">',
@@ -70,32 +78,73 @@ def generate_kml():
 
     # Add Access Points (APs)
     for ap in st.session_state.aps:
+        lon, lat, h = ap["lon"], ap["lat"], ap["height"]
         kml.extend([
             '    <Placemark>',
             f'      <name>{ap["name"]}</name>',
             f'      <description>Tx Power: {ap["tx_power"]} dBm\nAntenna Gain: {ap["antenna_gain"]} dBi</description>',
-            '      <Style><IconStyle><color>ff0000ff</color></IconStyle></Style>', # Red pin for APs
-            '      <Point>',
-            '        <extrude>1</extrude>',
-            '        <altitudeMode>relativeToGround</altitudeMode>',
-            f'        <coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates>',
-            '      </Point>',
+            '      <Style>',
+            '        <IconStyle><color>ff0000ff</color></IconStyle>',
+            '        <LineStyle><color>ff0000ff</color><width>3</width></LineStyle>',
+            '      </Style>',
+            '      <MultiGeometry>',
+            '        <Point>',
+            '          <altitudeMode>relativeToGround</altitudeMode>',
+            f'          <coordinates>{lon},{lat},{h}</coordinates>',
+            '        </Point>',
+            '        <LineString>',
+            '          <extrude>1</extrude>',
+            '          <altitudeMode>relativeToGround</altitudeMode>',
+            f'          <coordinates>{lon},{lat},0 {lon},{lat},{h}</coordinates>',
+            '        </LineString>',
+            '      </MultiGeometry>',
             '    </Placemark>'
         ])
 
     # Add Customer Premises Equipment (CPEs)
     for cpe in st.session_state.cpes:
+        lon, lat, h = cpe["lon"], cpe["lat"], cpe["height"]
         kml.extend([
             '    <Placemark>',
             f'      <name>{cpe["name"]}</name>',
-            '      <Style><IconStyle><color>ffff0000</color></IconStyle></Style>', # Blue pin for CPEs
-            '      <Point>',
-            '        <extrude>1</extrude>',
-            '        <altitudeMode>relativeToGround</altitudeMode>',
-            f'        <coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
-            '      </Point>',
+            '      <Style>',
+            '        <IconStyle><color>ffff0000</color></IconStyle>',
+            '        <LineStyle><color>ffff0000</color><width>2</width></LineStyle>',
+            '      </Style>',
+            '      <MultiGeometry>',
+            '        <Point>',
+            '          <altitudeMode>relativeToGround</altitudeMode>',
+            f'          <coordinates>{lon},{lat},{h}</coordinates>',
+            '        </Point>',
+            '        <LineString>',
+            '          <extrude>1</extrude>',
+            '          <altitudeMode>relativeToGround</altitudeMode>',
+            f'          <coordinates>{lon},{lat},0 {lon},{lat},{h}</coordinates>',
+            '        </LineString>',
+            '      </MultiGeometry>',
             '    </Placemark>'
         ])
+
+    # Draw 3D Links from each CPE to the closest AP
+    if st.session_state.aps and st.session_state.cpes:
+        for cpe in st.session_state.cpes:
+            closest_ap = min(st.session_state.aps, key=lambda ap: get_distance(cpe['lat'], cpe['lon'], ap['lat'], ap['lon']))
+            
+            kml.extend([
+                '    <Placemark>',
+                f'      <name>Link: {closest_ap["name"]} to {cpe["name"]}</name>',
+                '      <Style>',
+                '        <LineStyle>',
+                '          <color>7f00ffff</color>', # Yellow, semi-transparent line
+                '          <width>2</width>',
+                '        </LineStyle>',
+                '      </Style>',
+                '      <LineString>',
+                '        <altitudeMode>relativeToGround</altitudeMode>',
+                f'        <coordinates>{closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]} {cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
+                '      </LineString>',
+                '    </Placemark>'
+            ])
 
     kml.extend([
         '  </Document>',
