@@ -57,6 +57,53 @@ def save_cpes():
     with open(CPE_FILE, "w") as f:
         json.dump(st.session_state.cpes, f)
 
+# --- KML Generation ---
+def generate_kml():
+    """Generates a KML string containing all APs and CPEs with relative heights."""
+    kml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<kml xmlns="http://www.opengis.net/kml/2.2">',
+        '  <Document>',
+        '    <name>PtMP Network Plan</name>',
+        '    <description>Exported from PtMP Planner Pro</description>'
+    ]
+
+    # Add Access Points (APs)
+    for ap in st.session_state.aps:
+        kml.extend([
+            '    <Placemark>',
+            f'      <name>{ap["name"]}</name>',
+            f'      <description>Tx Power: {ap["tx_power"]} dBm\nAntenna Gain: {ap["antenna_gain"]} dBi</description>',
+            '      <Style><IconStyle><color>ff0000ff</color></IconStyle></Style>', # Red pin for APs
+            '      <Point>',
+            '        <extrude>1</extrude>',
+            '        <altitudeMode>relativeToGround</altitudeMode>',
+            f'        <coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates>',
+            '      </Point>',
+            '    </Placemark>'
+        ])
+
+    # Add Customer Premises Equipment (CPEs)
+    for cpe in st.session_state.cpes:
+        kml.extend([
+            '    <Placemark>',
+            f'      <name>{cpe["name"]}</name>',
+            '      <Style><IconStyle><color>ffff0000</color></IconStyle></Style>', # Blue pin for CPEs
+            '      <Point>',
+            '        <extrude>1</extrude>',
+            '        <altitudeMode>relativeToGround</altitudeMode>',
+            f'        <coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
+            '      </Point>',
+            '    </Placemark>'
+        ])
+
+    kml.extend([
+        '  </Document>',
+        '</kml>'
+    ])
+    
+    return "\n".join(kml)
+
 # --- Building Detection Function ---
 def fetch_buildings_from_osm_poly(poly_str):
     overpass_url = "http://overpass-api.de/api/interpreter"
@@ -163,6 +210,14 @@ st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
+    st.download_button(
+        label="🌍 Download 3D KML File",
+        data=generate_kml(),
+        file_name="ptmp_network_plan.kml",
+        mime="application/vnd.google-earth.kml+xml",
+        use_container_width=True
+    )
+    
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
     availability_target = st.number_input("Availability Target (%)", value=99.9, min_value=90.0, max_value=99.999, step=0.01, format="%.3f")
@@ -356,23 +411,19 @@ for m_idx in range(11, min_mcs_display - 1, -1):
 legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
-# THE FIX: We ONLY ask for "all_drawings". No center, no zoom tracking. This ends the refresh loop permanently.
 map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
 
 # --- 4. Handle Drawing Events ---
 if map_data and map_data.get("all_drawings") is not None:
     current_drawings = map_data["all_drawings"]
     
-    # Save drawings silently into memory so the "Detect Buildings" button can read them
     st.session_state.all_drawings = current_drawings
     
-    # Check if a Marker Point (AP) was dropped
     new_point = next((d for d in current_drawings if d["geometry"]["type"] == "Point"), None)
     
     if new_point:
         lon, lat = new_point["geometry"]["coordinates"]
         add_ap(lat, lon)
-        # Focus map and clear drawings
         st.session_state.map_center = [lat, lon]
         st.session_state.map_zoom = 15
         st.session_state.all_drawings = []
