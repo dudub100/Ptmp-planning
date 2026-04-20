@@ -6,3 +6,4 @@ astropy
 scipy
 requests
 fpdf
+simplekml
