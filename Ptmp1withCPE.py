@@ -75,7 +75,6 @@ def generate_kml():
         '    <name>PtMP Network Plan</name>',
         '    <description>Exported from PtMP Planner Pro</description>',
         
-        # --- Define Styles properly at the Document level ---
         '    <Style id="ap_style">',
         '      <IconStyle><color>ff0000ff</color><scale>1.2</scale></IconStyle>',
         '      <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>',
@@ -128,9 +127,13 @@ def generate_kml():
                 f'      <name>Link: {closest_ap["name"]} to {cpe["name"]}</name>',
                 '      <styleUrl>#link_style</styleUrl>',
                 '      <LineString>',
-                '        <extrude>0</extrude>',
+                '        <extrude>1</extrude>',
+                '        <tessellate>1</tessellate>',
                 '        <altitudeMode>relativeToGround</altitudeMode>',
-                f'        <coordinates>{closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]} {cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
+                '        <coordinates>',
+                f'          {closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]}',
+                f'          {cpe["lon"]},{cpe["lat"]},{cpe["height"]}',
+                '        </coordinates>',
                 '      </LineString>',
                 '    </Placemark>'
             ])
