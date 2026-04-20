@@ -8,6 +8,7 @@ import astropy.units as u
 import json
 import os
 import requests
+import simplekml
 
 # --- Step 2: Wi-Fi 7 MCS Data Table ---
 MCS_TABLE = [
@@ -67,83 +68,52 @@ def get_distance(lat1, lon1, lat2, lon2):
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
 
 def generate_kml():
-    """Generates a strict, OGC-compliant 3D KML string."""
-    kml = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<kml xmlns="http://www.opengis.net/kml/2.2">',
-        '  <Document>',
-        '    <name>PtMP Network Plan</name>',
-        '    <description>Exported from PtMP Planner Pro</description>',
-        
-        '    <Style id="ap_style">',
-        '      <IconStyle><color>ff0000ff</color><scale>1.2</scale></IconStyle>',
-        '      <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>',
-        '    </Style>',
-        '    <Style id="cpe_style">',
-        '      <IconStyle><color>ffff0000</color><scale>1.0</scale></IconStyle>',
-        '      <LineStyle><color>ffff0000</color><width>2</width></LineStyle>',
-        '    </Style>',
-        '    <Style id="link_style">',
-        '      <LineStyle><color>7f00ffff</color><width>2</width></LineStyle>',
-        '    </Style>'
-    ]
+    """Generates a 3D KML string using the simplekml library."""
+    kml = simplekml.Kml(name="PtMP Network Plan", description="Exported from PtMP Planner Pro")
+    
+    # --- Define Styles ---
+    ap_style = simplekml.Style()
+    ap_style.iconstyle.color = simplekml.Color.red
+    ap_style.iconstyle.scale = 1.2
+    
+    cpe_style = simplekml.Style()
+    cpe_style.iconstyle.color = simplekml.Color.blue
+    cpe_style.iconstyle.scale = 1.0
+    
+    link_style = simplekml.Style()
+    link_style.linestyle.color = simplekml.Color.yellow
+    link_style.linestyle.width = 2
 
-    # Add Access Points (APs)
+    # --- Add Access Points (APs) ---
     for ap in st.session_state.aps:
-        kml.extend([
-            '    <Placemark>',
-            f'      <name>{ap["name"]}</name>',
-            f'      <description>Tx Power: {ap["tx_power"]} dBm\nAntenna Gain: {ap["antenna_gain"]} dBi</description>',
-            '      <styleUrl>#ap_style</styleUrl>',
-            '      <Point>',
-            '        <extrude>1</extrude>',
-            '        <altitudeMode>relativeToGround</altitudeMode>',
-            f'        <coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates>',
-            '      </Point>',
-            '    </Placemark>'
-        ])
+        pnt = kml.newpoint(name=ap["name"], coords=[(ap["lon"], ap["lat"], ap["height"])])
+        pnt.description = f"Tx Power: {ap['tx_power']} dBm\nAntenna Gain: {ap['antenna_gain']} dBi"
+        pnt.altitudemode = simplekml.AltitudeMode.relativetoground
+        pnt.extrude = 1
+        pnt.style = ap_style
 
-    # Add Customer Premises Equipment (CPEs)
+    # --- Add Customer Premises Equipment (CPEs) ---
     for cpe in st.session_state.cpes:
-        kml.extend([
-            '    <Placemark>',
-            f'      <name>{cpe["name"]}</name>',
-            '      <styleUrl>#cpe_style</styleUrl>',
-            '      <Point>',
-            '        <extrude>1</extrude>',
-            '        <altitudeMode>relativeToGround</altitudeMode>',
-            f'        <coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates>',
-            '      </Point>',
-            '    </Placemark>'
-        ])
+        pnt = kml.newpoint(name=cpe["name"], coords=[(cpe["lon"], cpe["lat"], cpe["height"])])
+        pnt.altitudemode = simplekml.AltitudeMode.relativetoground
+        pnt.extrude = 1
+        pnt.style = cpe_style
 
-    # Draw 3D Links from each CPE to the closest AP
+    # --- Draw 3D Links from each CPE to the closest AP ---
     if st.session_state.aps and st.session_state.cpes:
         for cpe in st.session_state.cpes:
             closest_ap = min(st.session_state.aps, key=lambda ap: get_distance(cpe['lat'], cpe['lon'], ap['lat'], ap['lon']))
             
-            kml.extend([
-                '    <Placemark>',
-                f'      <name>Link: {closest_ap["name"]} to {cpe["name"]}</name>',
-                '      <styleUrl>#link_style</styleUrl>',
-                '      <LineString>',
-                '        <extrude>1</extrude>',
-                '        <tessellate>1</tessellate>',
-                '        <altitudeMode>relativeToGround</altitudeMode>',
-                '        <coordinates>',
-                f'          {closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]}',
-                f'          {cpe["lon"]},{cpe["lat"]},{cpe["height"]}',
-                '        </coordinates>',
-                '      </LineString>',
-                '    </Placemark>'
-            ])
+            line = kml.newlinestring(name=f"Link: {closest_ap['name']} to {cpe['name']}")
+            line.coords = [
+                (closest_ap["lon"], closest_ap["lat"], closest_ap["height"]),
+                (cpe["lon"], cpe["lat"], cpe["height"])
+            ]
+            line.altitudemode = simplekml.AltitudeMode.relativetoground
+            line.style = link_style
 
-    kml.extend([
-        '  </Document>',
-        '</kml>'
-    ])
-    
-    return "\n".join(kml)
+    # Returns the properly formatted XML string generated by simplekml
+    return kml.kml()
 
 # --- Building Detection Function ---
 def fetch_buildings_from_osm_poly(poly_str):
