@@ -8,7 +8,6 @@ import astropy.units as u
 import json
 import os
 import requests
-import simplekml
 import time
 
 # --- Step 2: Wi-Fi 7 MCS Data Table ---
@@ -68,58 +67,94 @@ def get_distance(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
 
+def hex_to_kml_color(hex_str, alpha="40"):
+    """Converts #RRGGBB to KML's AABBGGRR format."""
+    hex_str = hex_str.lstrip('#')
+    if len(hex_str) == 6:
+        r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+        return f"{alpha}{b}{g}{r}"
+    return "ffffffff"
+
 def generate_kml():
-    """Generates a 3D KML string using the simplekml library mimicking reference script."""
-    kml = simplekml.Kml()
+    """Generates a strict, properly elevated 3D KML string including sector polygons."""
+    kml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<kml xmlns="http://www.opengis.net/kml/2.2">',
+        '<Document>',
+        '<name>PtMP Network Plan</name>'
+    ]
     
-    # --- Add Access Points (APs) ---
+    # 1. Add Access Points & Sector Polygons
     for ap in st.session_state.aps:
-        name = str(ap["name"])
-        lon = float(ap["lon"])
-        lat = float(ap["lat"])
-        height = float(ap["height"])
+        lon, lat, h = ap["lon"], ap["lat"], ap["height"]
         
-        pnt = kml.newpoint(name=name, coords=[(lon, lat, height)])
-        pnt.description = f"Tx Power: {ap['tx_power']} dBm\nAntenna Gain: {ap['antenna_gain']} dBi"
-        pnt.altitudemode = simplekml.AltitudeMode.relativetoground
-        pnt.extrude = 1
+        # Draw AP Marker
+        kml.extend([
+            f'<Placemark><name>{ap["name"]}</name>',
+            '<Point>',
+            '  <extrude>1</extrude>',
+            '  <altitudeMode>relativeToGround</altitudeMode>',
+            f'  <coordinates>{lon},{lat},{h}</coordinates>',
+            '</Point>',
+            '</Placemark>'
+        ])
         
-        # Exact styling from your POP reference
-        pnt.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/pushpin/ylw-pushpin.png'
-        pnt.style.labelstyle.scale = 0.6
+        # Draw Polygons for Sector Coverage
+        mcs_data = calculate_all_mcs_radii(lat, lon, global_freq, ap["tx_power"], ap["antenna_gain"], cpe_gain, cpe_nf, ap.get("channel_bw", 80), availability_target)
+        start_angle = 0 
+        for sector in sorted(ap.get("sectors", []), key=lambda x: x["id"]):
+            end_angle = start_angle + ap["beam_width"]
+            for mcs_level in range(12):
+                if mcs_level < min_mcs_display: continue 
+                
+                polygon_points = get_sector_polygon(lat, lon, mcs_data[mcs_level]['radius_m'], start_angle, end_angle)
+                coord_str = " ".join([f"{pt[1]},{pt[0]},0" for pt in polygon_points])
+                kml_color = hex_to_kml_color(MCS_COLORS[mcs_level], alpha="40")
+                
+                kml.extend([
+                    f'<Placemark><name>{ap["name"]} Sec {sector["id"]} MCS {mcs_level}</name>',
+                    f'<Style><PolyStyle><color>{kml_color}</color></PolyStyle><LineStyle><width>0</width></LineStyle></Style>',
+                    '<Polygon>',
+                    '  <altitudeMode>clampToGround</altitudeMode>',
+                    f'  <outerBoundaryIs><LinearRing><coordinates>{coord_str}</coordinates></LinearRing></outerBoundaryIs>',
+                    '</Polygon>',
+                    '</Placemark>'
+                ])
+            start_angle = end_angle
 
-    # --- Add Customer Premises Equipment (CPEs) ---
-    for cpe in st.session_state.cpes:
-        name = str(cpe["name"])
-        lon = float(cpe["lon"])
-        lat = float(cpe["lat"])
-        height = float(cpe["height"])
-        
-        pnt = kml.newpoint(name=name, coords=[(lon, lat, height)])
-        pnt.altitudemode = simplekml.AltitudeMode.relativetoground
-        pnt.extrude = 1
-        
-        # Exact styling from your Node reference
-        pnt.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/paddle/grn-circle.png'
-        pnt.style.labelstyle.scale = 0.6
-
-    # --- Draw 3D Links from each CPE to the closest AP ---
+    # 2. Add CPEs and 3D Links
     if st.session_state.aps and st.session_state.cpes:
         for cpe in st.session_state.cpes:
-            closest_ap = min(st.session_state.aps, key=lambda a: get_distance(cpe['lat'], cpe['lon'], a['lat'], a['lon']))
+            lon, lat, h = cpe["lon"], cpe["lat"], cpe["height"]
             
-            line = kml.newlinestring(name=f"{cpe['name']} <-> {closest_ap['name']}")
-            line.coords = [
-                (float(closest_ap["lon"]), float(closest_ap["lat"]), float(closest_ap["height"])),
-                (float(cpe["lon"]), float(cpe["lat"]), float(cpe["height"]))
-            ]
-            line.altitudemode = simplekml.AltitudeMode.relativetoground
+            # Draw CPE Marker
+            kml.extend([
+                f'<Placemark><name>{cpe["name"]}</name>',
+                '<Style><IconStyle><color>ffff0000</color></IconStyle></Style>',
+                '<Point>',
+                '  <extrude>1</extrude>',
+                '  <altitudeMode>relativeToGround</altitudeMode>',
+                f'  <coordinates>{lon},{lat},{h}</coordinates>',
+                '</Point>',
+                '</Placemark>'
+            ])
             
-            # Exact line styling from your reference
-            line.style.linestyle.color = simplekml.Color.yellow
-            line.style.linestyle.width = 3
+            # Draw 3D connection link (THE FIX)
+            closest_ap = min(st.session_state.aps, key=lambda a: get_distance(lat, lon, a['lat'], a['lon']))
+            
+            kml.extend([
+                f'<Placemark><name>Link: {cpe["name"]} to {closest_ap["name"]}</name>',
+                '<Style><LineStyle><color>ff00a5ff</color><width>2</width></LineStyle></Style>',
+                '<LineString>',
+                '  <altitudeMode>relativeToGround</altitudeMode>',
+                f'  <coordinates>{closest_ap["lon"]},{closest_ap["lat"]},{closest_ap["height"]} {lon},{lat},{h}</coordinates>',
+                '</LineString>',
+                '</Placemark>'
+            ])
 
-    return kml.kml()
+    kml.append('</Document></kml>')
+    return "\n".join(kml).encode('utf-8')
+
 
 # --- Building Detection Function ---
 def fetch_buildings_from_osm_poly(poly_str):
@@ -227,13 +262,7 @@ st.set_page_config(page_title="PtMP Planner Pro", layout="wide")
 st.title("📡 Point-to-Multipoint Planning App")
 
 with st.sidebar:
-    st.download_button(
-        label="🌍 Download 3D KML File",
-        data=generate_kml(),
-        file_name=f"ptmp_network_plan_{int(time.time())}.kml", # Cache buster added here
-        mime="application/vnd.google-earth.kml+xml",
-        use_container_width=True
-    )
+    kml_download_placeholder = st.empty() 
     
     st.header("Global Settings")
     global_freq = st.selectbox("Frequency Band (GHz)", options=[5, 26, 60], index=1)
@@ -351,7 +380,9 @@ with st.sidebar:
             st.session_state.aps[i]["lat"] = col1.number_input("Latitude", value=float(ap["lat"]), format="%.6f", key=f"lat_{i}")
             st.session_state.aps[i]["lon"] = col2.number_input("Longitude", value=float(ap["lon"]), format="%.6f", key=f"lon_{i}")
             col_h, col_bw = st.columns(2)
+            
             st.session_state.aps[i]["height"] = col_h.number_input("Height (m)", value=float(ap["height"]), step=1.0, key=f"h_{i}")
+            
             st.session_state.aps[i]["channel_bw"] = col_bw.selectbox("Channel BW (MHz)", options=[40, 80, 160, 320], index=[40, 80, 160, 320].index(ap["channel_bw"]), key=f"cbw_{i}")
             col3, col4 = st.columns(2)
             st.session_state.aps[i]["tx_power"] = col3.number_input("Tx Power (dBm)", value=float(ap["tx_power"]), step=1.0, key=f"tx_{i}")
@@ -429,6 +460,16 @@ legend_html += "</div>"
 m.get_root().html.add_child(folium.Element(legend_html))
 
 map_data = st_folium(m, width=1000, height=600, returned_objects=["all_drawings"], key=f"ptmp_map_{st.session_state.map_key}")
+
+# --- Render the download area ---
+with kml_download_placeholder:
+    st.download_button(
+        label="🌍 Download 3D KML File",
+        data=generate_kml(),
+        file_name=f"ptmp_network_plan_{int(time.time())}.kml",
+        mime="application/vnd.google-earth.kml+xml",
+        use_container_width=True
+    )
 
 # --- 4. Handle Drawing Events ---
 if map_data and map_data.get("all_drawings") is not None:
