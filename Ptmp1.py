@@ -41,8 +41,11 @@ def hex_to_kml_color(hex_str, opacity="7f"):
 def generate_kml():
     kml = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2">', '<Document>', '<name>PtMP Network Plan</name>']
     
+    # Map AP names to their heights for correct 3D link generation
+    ap_heights = {ap["name"]: ap["height"] for ap in st.session_state.aps}
+    
     for ap in st.session_state.aps:
-        kml.append(f'<Placemark><name>{ap["name"]}</name><Point><coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates></Point></Placemark>')
+        kml.append(f'<Placemark><name>{ap["name"]}</name><Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>{ap["lon"]},{ap["lat"]},{ap["height"]}</coordinates></Point></Placemark>')
         mcs_data = calculate_all_mcs_radii(ap["lat"], ap["lon"], st.session_state.glob_freq, ap["tx_power"], ap["antenna_gain"], st.session_state.glob_cpe_gain, st.session_state.glob_cpe_nf, ap.get("channel_bw", 80), st.session_state.glob_avail)
         start_angle = ap.get("azimuth", 0) 
         for sector in sorted(ap.get("sectors", []), key=lambda x: x["id"]):
@@ -55,7 +58,7 @@ def generate_kml():
                 kml.append(f"""
                 <Placemark><name>{ap["name"]} Sec {sector["id"]} MCS {mcs_level}</name>
                 <Style><PolyStyle><color>{kml_color}</color></PolyStyle><LineStyle><width>0</width></LineStyle></Style>
-                <Polygon><outerBoundaryIs><LinearRing><coordinates>{coords_str}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+                <Polygon><altitudeMode>clampToGround</altitudeMode><outerBoundaryIs><LinearRing><coordinates>{coords_str}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
                 """)
             start_angle = end_angle
 
@@ -64,14 +67,23 @@ def generate_kml():
         kml.append(f"""
         <Placemark><name>{cpe["name"]} ({cpe.get("mcs", "Unassigned")})</name>
         <Style><IconStyle><color>{cpe_color}</color><scale>1.0</scale></IconStyle></Style>
-        <Point><coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates></Point></Placemark>
+        <Point><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><coordinates>{cpe["lon"]},{cpe["lat"]},{cpe["height"]}</coordinates></Point></Placemark>
         """)
+        
         if cpe.get("line") and isinstance(cpe["line"], list) and len(cpe["line"]) == 2:
-            line_coords = f"{cpe['line'][0][1]},{cpe['line'][0][0]},0 {cpe['line'][1][1]},{cpe['line'][1][0]},0"
+            ap_name = cpe.get("ap")
+            ap_h = ap_heights.get(ap_name, 10.0)
+            cpe_h = cpe.get("height", 8.0)
+            
+            ap_lat, ap_lon = cpe['line'][0]
+            cpe_lat, cpe_lon = cpe['line'][1]
+            
+            line_coords = f"{ap_lon},{ap_lat},{ap_h} {cpe_lon},{cpe_lat},{cpe_h}"
+            
             kml.append(f"""
-            <Placemark><name>Link: {cpe['name']} to {cpe['ap']}</name>
+            <Placemark><name>Link: {cpe['name']} to {ap_name}</name>
             <Style><LineStyle><color>{cpe_color}</color><width>2</width></LineStyle></Style>
-            <LineString><extrude>1</extrude><tessellate>1</tessellate><coordinates>{line_coords}</coordinates></LineString></Placemark>
+            <LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>{line_coords}</coordinates></LineString></Placemark>
             """)
     
     kml.extend(['</Document>', '</kml>'])
