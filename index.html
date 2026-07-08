@@ -1,31 +1,32 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PtMP Planner: Multi-AP Management</title>
+    <title>PtMP Planner: Capacitated TU Assignment</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <style>
         body, html { margin: 0; padding: 0; font-family: Arial, sans-serif; height: 100%; width: 100%; display: flex; flex-direction: row; overflow: hidden; }
-        #sidebar { width: 400px; min-width: 400px; height: 100%; background: #f8f9fa; display: flex; flex-direction: column; border-right: 1px solid #ccc; z-index: 2; box-shadow: 2px 0 5px rgba(0,0,0,0.1); }
+        #sidebar { width: 420px; min-width: 420px; height: 100%; background: #f8f9fa; display: flex; flex-direction: column; border-right: 1px solid #ccc; z-index: 2; box-shadow: 2px 0 5px rgba(0,0,0,0.1); }
         #sidebar-scroll { flex-grow: 1; overflow-y: auto; padding: 15px; box-sizing: border-box; }
         #map { flex-grow: 1; height: 100%; position: relative; z-index: 1; background: #e5e3df; }
         
         h2 { font-size: 15px; margin-top: 0; margin-bottom: 10px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
         .form-group { margin-bottom: 10px; }
         label { display: block; font-weight: bold; margin-bottom: 3px; font-size: 12px; color: #555; }
-        input[type="number"], input[type="text"], select { width: 100%; padding: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+        input[type="number"], input[type="text"], select, textarea { width: 100%; padding: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+        textarea { height: 60px; resize: vertical; font-family: monospace; }
         
-        button { width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; }
+        button { width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; margin-bottom: 5px;}
         button:hover { background: #0056b3; }
         .btn-success { background: #28a745; }
         .btn-success:hover { background: #218838; }
         .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 11px; width: auto; flex-shrink: 0;}
         .btn-danger:hover { background: #c82333; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-warning:hover { background: #e0a800; }
         .btn-toggle { background: #e9ecef; color: #333; width: 24px; height: 24px; padding: 0; display: flex; align-items: center; justify-content: center; margin-right: 8px; border: 1px solid #ccc;}
         .btn-toggle:hover { background: #dde0e3; }
-        .btn-clear { background: #6c757d; margin-top: 10px;}
         
-        /* AP Card Styling */
         .ap-card { background: #fff; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .ap-card-header { display: flex; align-items: center; margin-bottom: 8px; }
         .ap-card-header input { font-weight: bold; border: none; background: transparent; font-size: 14px; flex-grow: 1; color: #007bff; border-bottom: 1px solid transparent; margin-right: 10px;}
@@ -33,7 +34,6 @@
         
         .sector-box { background: #f1f3f5; padding: 8px; border-radius: 4px; margin-top: 8px; border: 1px solid #e9ecef; }
         .channel-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px; }
-        .channel-grid .form-group { margin-bottom: 0; }
         
         #logBox { height: 120px; min-height: 120px; flex-shrink: 0; background: #1e1e1e; padding: 10px; font-family: monospace; font-size: 11px; overflow-y: auto; border-top: 2px solid #333; box-sizing: border-box; }
         .log-msg { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
@@ -41,6 +41,10 @@
         .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.95); padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 5px rgba(0,0,0,0.2);}
         .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
         .legend-color { width: 12px; height: 12px; margin-right: 8px; border: 1px solid #777; border-radius: 2px;}
+        
+        .mode-selector { display: flex; background: #e9ecef; border-radius: 4px; padding: 3px; margin-bottom: 10px; }
+        .mode-btn { flex: 1; padding: 6px; text-align: center; cursor: pointer; font-size: 12px; font-weight: bold; border-radius: 3px; transition: 0.2s;}
+        .mode-btn.active { background: #007bff; color: white; }
     </style>
 </head>
 <body>
@@ -61,24 +65,20 @@
             <div class="form-group" style="flex: 1;">
                 <label>Channel BW (MHz)</label>
                 <select id="channelBw" onchange="updateLegend()">
-                    <option value="20">20 MHz</option>
                     <option value="40">40 MHz</option>
-                    <option value="60">60 MHz</option>
                     <option value="80" selected>80 MHz</option>
-                    <option value="140">140 MHz</option>
                     <option value="160">160 MHz</option>
                     <option value="320">320 MHz</option>
                 </select>
             </div>
-        </div>
-        <div class="form-group">
-            <label>Availability Target (%)</label>
-            <select id="availSelect">
-                <option value="99.9">99.9% (~8.7 hrs down/yr)</option>
-                <option value="99.95">99.95% (~4.3 hrs down/yr)</option>
-                <option value="99.99" selected>99.99% (~52 mins down/yr)</option>
-                <option value="99.999">99.999% (~5 mins down/yr)</option>
-            </select>
+            <div class="form-group" style="flex: 1;">
+                <label>Avail (%)</label>
+                <select id="availSelect">
+                    <option value="99.9">99.9</option>
+                    <option value="99.95">99.95</option>
+                    <option value="99.99" selected>99.99</option>
+                </select>
+            </div>
         </div>
         <div style="display: flex; gap: 5px;">
             <div class="form-group" style="flex: 1;">
@@ -86,307 +86,280 @@
                 <input type="number" id="cpeGain" value="15">
             </div>
             <div class="form-group" style="flex: 1;">
-                <label>CPE Noise Fig (dB)</label>
+                <label>CPE NF (dB)</label>
                 <input type="number" id="cpeNf" value="7.0" step="0.5">
             </div>
             <div class="form-group" style="flex: 1;">
-                <label>CPE Height (m)</label>
+                <label>CPE H AGL (m)</label>
                 <input type="number" id="cpeHeight" value="8">
             </div>
         </div>
 
         <hr style="border: 0; border-top: 1px solid #ccc; margin: 15px 0;">
         
-        <h2>2. Default AP Deployment Settings</h2>
-        <div style="display: flex; gap: 5px;">
-            <div class="form-group" style="flex: 1;">
-                <label>Num Sectors</label>
-                <input type="number" id="defSectors" value="4" min="1" max="12">
-            </div>
-            <div class="form-group" style="flex: 1;">
-                <label>Sector BW (°)</label>
-                <input type="number" id="defBeamwidth" value="90" min="10" max="360">
-            </div>
-            <div class="form-group" style="flex: 1;">
-                <label>Array Azimuth</label>
-                <input type="number" id="defAzimuth" value="0">
-            </div>
+        <h2>2. Map Interaction Mode</h2>
+        <div class="mode-selector">
+            <div class="mode-btn active" id="modeAP" onclick="setMode('AP')">📍 Drop Base Station</div>
+            <div class="mode-btn" id="modeTU" onclick="setMode('TU')">🏠 Drop Terminal Unit</div>
         </div>
-        <div style="font-size: 11px; color: #666; margin-bottom: 10px;">Click anywhere on the map to deploy a new Base Station.</div>
         
-        <div id="apContainer"></div>
+        <div id="apControls" style="display: block;">
+            <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Click map to deploy AP. Default settings:</div>
+            <div style="display: flex; gap: 5px;">
+                <div class="form-group" style="flex: 1;">
+                    <label>Sectors</label>
+                    <input type="number" id="defSectors" value="4" min="1" max="12">
+                </div>
+                <div class="form-group" style="flex: 1;">
+                    <label>Sector BW (°)</label>
+                    <input type="number" id="defBeamwidth" value="90" min="10" max="360">
+                </div>
+                <div class="form-group" style="flex: 1;">
+                    <label>Array Azimuth</label>
+                    <input type="number" id="defAzimuth" value="0">
+                </div>
+            </div>
+            <div id="apContainer"></div>
+            <button id="btnCoverage" class="btn-success" onclick="calculateCoverage()" disabled>1. Generate Coverage Sweep</button>
+        </div>
 
-        <button id="btnCoverage" class="btn-success" onclick="calculateCoverage()" disabled>Generate Coverage Sweep</button>
-        <button id="btnClear" class="btn-clear" onclick="clearMap()">Clear All Base Stations</button>
+        <div id="tuControls" style="display: none;">
+            <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Click map to drop a TU, or paste a list:</div>
+            <div class="form-group">
+                <label>Bulk Paste (Format: Lat, Lon)</label>
+                <textarea id="bulkTuInput" placeholder="32.095, 34.956&#10;32.096, 34.958"></textarea>
+                <button onclick="bulkImportTUs()" style="margin-top: 5px;">Import List</button>
+            </div>
+            <hr>
+            <div style="display: flex; gap: 5px;">
+                <div class="form-group" style="flex: 1;">
+                    <label>Max TU / Sector</label>
+                    <input type="number" id="maxTuSector" value="16">
+                </div>
+                <div class="form-group" style="flex: 1;">
+                    <label>Max TU / AP</label>
+                    <input type="number" id="maxTuAp" value="32">
+                </div>
+            </div>
+            <button id="btnAssign" class="btn-warning" onclick="assignTUs()">2. Run Smart Assignment</button>
+        </div>
+
+        <button onclick="clearMap()" style="background: #6c757d; margin-top: 15px;">Clear Entire Map</button>
     </div>
     
     <div id="logBox">
-        <div class="log-msg" style="color: #4caf50;">[System] State-Managed PtMP Engine Ready.</div>
+        <div class="log-msg" style="color: #4caf50;">[System] Engine Ready. Mode: Deploy AP.</div>
     </div>
 </div>
 
 <div id="map">
-    <div class="legend" id="capLegend">
-        </div>
+    <div class="legend" id="capLegend"></div>
 </div>
 
 <script>
-    // --- MAP INITIALIZATION ---
+    // --- INIT ---
     const map = L.map('map').setView([32.095, 34.956], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
     setTimeout(() => { map.invalidateSize(); }, 500);
 
-    // --- WI-FI 7 FULL MCS TABLE ---
     const MCS_TABLE = [
-        {mcs: 0,  mod: "BPSK",     snr: 2,  baseCap: 34.03,  color: '#ff0000'},
-        {mcs: 1,  mod: "QPSK",     snr: 5,  baseCap: 68.06,  color: '#ff4500'},
-        {mcs: 2,  mod: "QPSK",     snr: 8,  baseCap: 102.08, color: '#ff8c00'},
-        {mcs: 3,  mod: "16-QAM",   snr: 11, baseCap: 136.11, color: '#ffa500'},
-        {mcs: 4,  mod: "16-QAM",   snr: 14, baseCap: 204.17, color: '#ffd700'},
-        {mcs: 5,  mod: "64-QAM",   snr: 16, baseCap: 272.22, color: '#ffff00'},
-        {mcs: 6,  mod: "64-QAM",   snr: 18, baseCap: 306.25, color: '#adff2f'},
-        {mcs: 7,  mod: "64-QAM",   snr: 21, baseCap: 340.28, color: '#7fff00'},
-        {mcs: 8,  mod: "256-QAM",  snr: 24, baseCap: 408.33, color: '#00ff00'},
-        {mcs: 9,  mod: "256-QAM",  snr: 27, baseCap: 453.70, color: '#00fa9a'},
-        {mcs: 10, mod: "1024-QAM", snr: 30, baseCap: 510.42, color: '#00ced1'},
+        {mcs: 0, mod: "BPSK", snr: 2, baseCap: 34.03, color: '#ff0000'},
+        {mcs: 2, mod: "QPSK", snr: 8, baseCap: 102.08, color: '#ff8c00'},
+        {mcs: 5, mod: "64-QAM", snr: 16, baseCap: 272.22, color: '#ffff00'},
+        {mcs: 8, mod: "256-QAM", snr: 24, baseCap: 408.33, color: '#00ff00'},
         {mcs: 11, mod: "1024-QAM", snr: 33, baseCap: 567.13, color: '#0000ff'}
     ];
 
-    // --- STATE MANAGEMENT ---
-    let aps = []; 
-    let apCounter = 1;
-    let apMarkers = {}; 
-    let apCoverageLayers = {}; // Tracks drawn layers per AP ID for clean deletion
+    let currentMode = 'AP';
+    
+    // State
+    let aps = []; let apCounter = 1;
+    let apMarkers = {}; let apCoverageLayers = {};
+    
+    let tus = []; let tuCounter = 1;
+    let tuMarkers = {}; let assignmentLines = [];
 
-    // --- DYNAMIC LEGEND ---
     function updateLegend() {
         const bw = parseFloat(document.getElementById('channelBw').value);
         const legendBox = document.getElementById('capLegend');
         legendBox.innerHTML = '<div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones</div>';
-        
         [...MCS_TABLE].reverse().forEach(tier => {
             const currentCap = (tier.baseCap * (bw / 80)).toFixed(1);
-            legendBox.innerHTML += `
-                <div class="legend-item">
-                    <div class="legend-color" style="background: ${tier.color};"></div>
-                    MCS ${tier.mcs} (${tier.mod}) - <b>${currentCap} Mbps</b>
-                </div>`;
+            legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} - <b>${currentCap} Mbps</b></div>`;
         });
     }
     updateLegend();
 
     function logMsg(msg, type='info') {
         const logBox = document.getElementById('logBox');
-        let color = '#4caf50'; 
-        if (type === 'warn') color = '#ffeb3b'; 
-        if (type === 'error') color = '#f44336'; 
+        let color = '#4caf50'; if (type === 'warn') color = '#ffeb3b'; if (type === 'error') color = '#f44336'; 
         logBox.innerHTML += `<div class="log-msg" style="color: ${color}">${msg}</div>`;
         logBox.scrollTop = logBox.scrollHeight;
     }
 
-    // --- AP MANAGEMENT LOGIC ---
+    // --- UI TOGGLE ---
+    window.setMode = function(mode) {
+        currentMode = mode;
+        document.getElementById('modeAP').className = mode === 'AP' ? 'mode-btn active' : 'mode-btn';
+        document.getElementById('modeTU').className = mode === 'TU' ? 'mode-btn active' : 'mode-btn';
+        document.getElementById('apControls').style.display = mode === 'AP' ? 'block' : 'none';
+        document.getElementById('tuControls').style.display = mode === 'TU' ? 'block' : 'none';
+        logMsg(`Mode changed to: ${mode === 'AP' ? 'Deploy Base Station' : 'Deploy Terminal Unit'}`);
+    }
+
+    // --- MAP CLICK HANDLER ---
     map.on('click', function(e) {
+        if (currentMode === 'AP') {
+            deployAP(e.latlng.lat, e.latlng.lng);
+        } else {
+            deployTU(e.latlng.lat, e.latlng.lng);
+        }
+    });
+
+    function deployAP(lat, lng) {
         const defSectors = parseInt(document.getElementById('defSectors').value) || 4;
         const defBW = parseFloat(document.getElementById('defBeamwidth').value) || 90;
         const defAz = parseFloat(document.getElementById('defAzimuth').value) || 0;
 
         const newAP = {
-            id: apCounter,
-            name: `Base Station ${apCounter}`,
-            lat: e.latlng.lat,
-            lng: e.latlng.lng,
-            height: 30,
-            txPower: 23,
-            apGain: 20,
-            baseAzimuth: defAz, // Center of the entire array
-            numSectors: defSectors,
-            sectorBeamwidth: defBW,
-            channels: [], 
-            collapsed: false
+            id: apCounter, name: `Base Station ${apCounter}`, lat: lat, lng: lng,
+            height: 30, txPower: 23, apGain: 20, baseAzimuth: defAz, numSectors: defSectors, sectorBeamwidth: defBW,
+            channels: [], collapsed: false
         };
         
-        // Smart Channel Auto-Fill (Reuse every 2 or 3)
         let reuseFactor = (newAP.numSectors === 3) ? 3 : 2; 
-        for(let i = 0; i < newAP.numSectors; i++) {
-            newAP.channels.push((i % reuseFactor) + 1);
-        }
+        for(let i = 0; i < newAP.numSectors; i++) { newAP.channels.push((i % reuseFactor) + 1); }
         
-        aps.push(newAP);
-        apCoverageLayers[newAP.id] = []; 
+        aps.push(newAP); apCoverageLayers[newAP.id] = []; 
         
         let marker = L.marker([newAP.lat, newAP.lng]).addTo(map);
         marker.bindPopup(`<b>${newAP.name}</b><br>${newAP.numSectors} Sectors`);
         apMarkers[newAP.id] = marker;
         
-        apCounter++;
-        renderAPList();
-        
+        apCounter++; renderAPList();
         document.getElementById('btnCoverage').disabled = false;
-        logMsg(`Deployed ${newAP.name} at ${newAP.lat.toFixed(4)}, ${newAP.lng.toFixed(4)}`);
-    });
+        logMsg(`Deployed ${newAP.name}.`);
+    }
 
-    function toggleCollapse(id) {
+    function deployTU(lat, lng) {
+        const newTU = { id: tuCounter, lat: lat, lng: lng, assignedSector: null, assignedAP: null };
+        tus.push(newTU);
+        
+        let marker = L.circleMarker([lat, lng], {color: '#333', fillColor: '#fff', fillOpacity: 1, radius: 5, weight: 2}).addTo(map);
+        marker.bindPopup(`<b>TU ${tuCounter}</b><br>Unassigned`);
+        tuMarkers[newTU.id] = marker;
+        
+        tuCounter++;
+    }
+
+    window.bulkImportTUs = function() {
+        const text = document.getElementById('bulkTuInput').value;
+        const lines = text.split('\n');
+        let count = 0;
+        lines.forEach(line => {
+            const parts = line.split(',');
+            if(parts.length >= 2) {
+                const lat = parseFloat(parts[0].trim());
+                const lng = parseFloat(parts[1].trim());
+                if(!isNaN(lat) && !isNaN(lng)) { deployTU(lat, lng); count++; }
+            }
+        });
+        logMsg(`Imported ${count} Terminal Units.`);
+        document.getElementById('bulkTuInput').value = "";
+    }
+
+    // --- AP RENDERING ---
+    window.toggleCollapse = function(id) {
         let ap = aps.find(a => a.id === id);
-        if(ap) {
-            ap.collapsed = !ap.collapsed;
-            renderAPList();
-        }
+        if(ap) { ap.collapsed = !ap.collapsed; renderAPList(); }
     }
 
     function renderAPList() {
         const container = document.getElementById('apContainer');
         container.innerHTML = "";
-        
-        if(aps.length === 0) {
-            document.getElementById('btnCoverage').disabled = true;
-        }
-
         aps.forEach((ap) => {
             let channelsHtml = '';
             ap.channels.forEach((ch, sIdx) => {
-                channelsHtml += `
-                    <div class="form-group">
-                        <label>S${sIdx + 1} Ch</label>
-                        <input type="number" value="${ch}" onchange="updateAP(${ap.id}, 'channel', this.value, ${sIdx})">
-                    </div>
-                `;
+                channelsHtml += `<div class="form-group"><label>S${sIdx + 1}</label><input type="number" value="${ch}" onchange="updateAP(${ap.id}, 'channel', this.value, ${sIdx})"></div>`;
             });
-
-            const card = document.createElement('div');
-            card.className = 'ap-card';
-            
+            const card = document.createElement('div'); card.className = 'ap-card';
             card.innerHTML = `
                 <div class="ap-card-header">
                     <button class="btn-toggle" onclick="toggleCollapse(${ap.id})">${ap.collapsed ? '+' : '-'}</button>
                     <input type="text" value="${ap.name}" onchange="updateAP(${ap.id}, 'name', this.value)">
                     <button class="btn-danger" onclick="deleteAP(${ap.id})">X</button>
                 </div>
-                
                 <div style="display: ${ap.collapsed ? 'none' : 'block'};">
                     <div style="display: flex; gap: 5px;">
-                        <div class="form-group" style="flex: 1;">
-                            <label>Tx (dBm)</label>
-                            <input type="number" value="${ap.txPower}" onchange="updateAP(${ap.id}, 'txPower', this.value)">
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>Gain (dBi)</label>
-                            <input type="number" value="${ap.apGain}" onchange="updateAP(${ap.id}, 'apGain', this.value)">
-                        </div>
-                        <div class="form-group" style="flex: 1;">
-                            <label>H AGL (m)</label>
-                            <input type="number" value="${ap.height}" onchange="updateAP(${ap.id}, 'height', this.value)">
-                        </div>
+                        <div class="form-group" style="flex: 1;"><label>Tx (dBm)</label><input type="number" value="${ap.txPower}" onchange="updateAP(${ap.id}, 'txPower', this.value)"></div>
+                        <div class="form-group" style="flex: 1;"><label>Gain (dBi)</label><input type="number" value="${ap.apGain}" onchange="updateAP(${ap.id}, 'apGain', this.value)"></div>
+                        <div class="form-group" style="flex: 1;"><label>H (m)</label><input type="number" value="${ap.height}" onchange="updateAP(${ap.id}, 'height', this.value)"></div>
                     </div>
-
                     <div class="sector-box">
                         <div style="display: flex; gap: 5px;">
-                            <div class="form-group" style="flex: 1;">
-                                <label>Num Sectors</label>
-                                <input type="number" value="${ap.numSectors}" min="1" max="12" onchange="updateAP(${ap.id}, 'numSectors', this.value)">
-                            </div>
-                            <div class="form-group" style="flex: 1;">
-                                <label>Sector BW (°)</label>
-                                <input type="number" value="${ap.sectorBeamwidth}" min="10" max="360" onchange="updateAP(${ap.id}, 'sectorBeamwidth', this.value)">
-                            </div>
-                            <div class="form-group" style="flex: 1;">
-                                <label>Array Azimuth</label>
-                                <input type="number" value="${ap.baseAzimuth}" onchange="updateAP(${ap.id}, 'baseAzimuth', this.value)">
-                            </div>
+                            <div class="form-group" style="flex: 1;"><label>Sectors</label><input type="number" value="${ap.numSectors}" onchange="updateAP(${ap.id}, 'numSectors', this.value)"></div>
+                            <div class="form-group" style="flex: 1;"><label>BW (°)</label><input type="number" value="${ap.sectorBeamwidth}" onchange="updateAP(${ap.id}, 'sectorBeamwidth', this.value)"></div>
+                            <div class="form-group" style="flex: 1;"><label>Azimuth</label><input type="number" value="${ap.baseAzimuth}" onchange="updateAP(${ap.id}, 'baseAzimuth', this.value)"></div>
                         </div>
-                        
-                        <label style="margin-top: 5px;">Channel Assignments</label>
-                        <div class="channel-grid">
-                            ${channelsHtml}
-                        </div>
+                        <label style="margin-top: 5px;">Channels</label><div class="channel-grid">${channelsHtml}</div>
                     </div>
-                </div>
-            `;
+                </div>`;
             container.appendChild(card);
         });
     }
 
-    window.updateAP = function(id, field, value, sectorIndex = null) {
+    window.updateAP = function(id, field, value, sIdx = null) {
         let ap = aps.find(a => a.id === id);
         if(!ap) return;
-
         if (field === 'name') ap.name = value;
-        if (field === 'txPower') ap.txPower = parseFloat(value);
-        if (field === 'apGain') ap.apGain = parseFloat(value);
-        if (field === 'height') ap.height = parseFloat(value);
-        if (field === 'baseAzimuth') ap.baseAzimuth = parseFloat(value);
-        if (field === 'sectorBeamwidth') ap.sectorBeamwidth = parseFloat(value);
-        
-        if (field === 'channel' && sectorIndex !== null) {
-            ap.channels[sectorIndex] = parseInt(value);
-        }
-
+        if (field === 'txPower' || field === 'apGain' || field === 'height' || field === 'baseAzimuth' || field === 'sectorBeamwidth' || field === 'numSectors') ap[field] = parseFloat(value);
+        if (field === 'channel' && sIdx !== null) ap.channels[sIdx] = parseInt(value);
         if (field === 'numSectors') {
-            let num = parseInt(value);
-            ap.numSectors = num;
-            
-            ap.channels = [];
-            let reuseFactor = (num === 3) ? 3 : 2; 
-            for(let i = 0; i < num; i++) {
-                ap.channels.push((i % reuseFactor) + 1);
-            }
+            ap.channels = []; let r = (ap.numSectors === 3) ? 3 : 2; 
+            for(let i=0; i<ap.numSectors; i++) ap.channels.push((i%r)+1);
         }
-        
-        if(apMarkers[id]) { apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`); }
+        if(apMarkers[id]) apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`);
         renderAPList();
     }
 
     window.deleteAP = function(id) {
         aps = aps.filter(a => a.id !== id);
-        
-        // Remove Marker
-        if (apMarkers[id]) {
-            map.removeLayer(apMarkers[id]);
-            delete apMarkers[id];
-        }
-        
-        // Remove Coverage & Boundaries uniquely associated with this AP
-        if (apCoverageLayers[id]) {
-            apCoverageLayers[id].forEach(layer => map.removeLayer(layer));
-            delete apCoverageLayers[id];
-        }
-        
+        if (apMarkers[id]) { map.removeLayer(apMarkers[id]); delete apMarkers[id]; }
+        if (apCoverageLayers[id]) { apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); delete apCoverageLayers[id]; }
         renderAPList();
-        logMsg(`Deleted Base Station ID ${id}.`, 'warn');
     }
 
-    function clearMap() {
-        aps = [];
-        apCounter = 1;
-        for (let id in apMarkers) { map.removeLayer(apMarkers[id]); }
-        apMarkers = {};
+    window.clearMap = function() {
+        aps = []; apCounter = 1;
+        for (let id in apMarkers) map.removeLayer(apMarkers[id]); apMarkers = {};
+        for (let id in apCoverageLayers) apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); apCoverageLayers = {};
         
-        for (let id in apCoverageLayers) {
-            apCoverageLayers[id].forEach(layer => map.removeLayer(layer));
-        }
-        apCoverageLayers = {};
+        tus = []; tuCounter = 1;
+        for (let id in tuMarkers) map.removeLayer(tuMarkers[id]); tuMarkers = {};
+        assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
         
-        renderAPList();
-        logMsg("All Base Stations cleared.", "error");
+        renderAPList(); logMsg("Map Cleared.", "warn");
     }
 
-    // --- GIS & RF CALCULATOR ---
+    // --- MATH ---
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371; const dLat = (lat2 - lat1) * Math.PI / 180; const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+    
+    function getBearing(lat1, lon1, lat2, lon2) {
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+        const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) - Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+        return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
     function getDestination(lat, lon, distanceKm, bearing) {
-        const R = 6371; 
-        const latRad = lat * Math.PI / 180;
-        const lonRad = lon * Math.PI / 180;
-        const bearingRad = bearing * Math.PI / 180;
-
+        const R = 6371; const latRad = lat * Math.PI / 180; const lonRad = lon * Math.PI / 180; const bearingRad = bearing * Math.PI / 180;
         const outLat = Math.asin(Math.sin(latRad) * Math.cos(distanceKm / R) + Math.cos(latRad) * Math.sin(distanceKm / R) * Math.cos(bearingRad));
         const outLon = lonRad + Math.atan2(Math.sin(bearingRad) * Math.sin(distanceKm / R) * Math.cos(latRad), Math.cos(distanceKm / R) - Math.sin(latRad) * Math.sin(outLat));
         return { lat: outLat * 180 / Math.PI, lng: outLon * 180 / Math.PI };
-    }
-
-    function getDistance(lat1, lon1, lat2, lon2) {
-        const R = 6371; 
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     function calculateMaxRadii(ap) {
@@ -395,9 +368,7 @@
         const rxGain = parseFloat(document.getElementById('cpeGain').value);
         const nf = parseFloat(document.getElementById('cpeNf').value);
         const avail = parseFloat(document.getElementById('availSelect').value);
-        
-        const bwHz = bw * 1e6; 
-        const noiseFloor = -174 + (10 * Math.log10(bwHz)) + nf;
+        const noiseFloor = -174 + (10 * Math.log10(bw * 1e6)) + nf;
         
         let gamma = 0.01; 
         if (freq === 26) gamma = (avail >= 99.99) ? 6.5 : 2.5;
@@ -406,53 +377,162 @@
         if (freq === 39) gamma = (avail >= 99.99) ? 12.0 : 6.0;
 
         let results = [];
-        
         MCS_TABLE.forEach(tier => {
             const rxThreshold = noiseFloor + tier.snr;
             let minD = 0.01, maxD = 30.0, bestD = 0.01;
-            
             for (let i = 0; i < 30; i++) {
                 let midD = (minD + maxD) / 2.0;
                 let fspl = 20 * Math.log10(midD) + 20 * Math.log10(freq) + 92.45;
-                let rxPower = ap.txPower + ap.apGain + rxGain - (fspl + (gamma * midD));
-                
-                if (rxPower >= rxThreshold) {
-                    bestD = midD;
-                    minD = midD;
-                } else {
-                    maxD = midD;
-                }
+                if (ap.txPower + ap.apGain + rxGain - (fspl + (gamma * midD)) >= rxThreshold) { bestD = midD; minD = midD; } else { maxD = midD; }
             }
             results.push({ mcs: tier.mcs, mod: tier.mod, color: tier.color, radiusKm: bestD });
         });
         return results;
     }
 
-    // --- MASTER RADIAL SWEEP ENGINE ---
-    async function calculateCoverage() {
-        if (aps.length === 0) return;
-        const btn = document.getElementById('btnCoverage');
-        btn.disabled = true;
-        btn.innerText = "Processing Terrain Sweep...";
+    // --- ASSIGNMENT ENGINE ---
+    async function checkLoSPointToPoint(lat1, lon1, h1, lat2, lon2, h2) {
+        const distKm = getDistance(lat1, lon1, lat2, lon2);
+        let SAMPLES = Math.floor(distKm * 1000 / 90); if (SAMPLES < 10) SAMPLES = 10;
         
+        let lats=[], lngs=[];
+        for (let i = 0; i < SAMPLES; i++) {
+            lats.push((lat1 + (lat2 - lat1) * (i / (SAMPLES - 1))).toFixed(5));
+            lngs.push((lon1 + (lon2 - lon1) * (i / (SAMPLES - 1))).toFixed(5));
+        }
+        
+        try {
+            let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats.join(',')}&longitude=${lngs.join(',')}`);
+            let data = await res.json();
+            if (!data.elevation) return false;
+            
+            const K_FACTOR = 1.333;
+            for (let i = 1; i < SAMPLES - 1; i++) {
+                let currentElev = data.elevation[i];
+                let expectedLine = (data.elevation[0] + h1) + ((data.elevation[SAMPLES-1] + h2) - (data.elevation[0] + h1)) * (i / (SAMPLES - 1));
+                let d1 = distKm * (i / (SAMPLES - 1)); let d2 = distKm - d1;
+                let earthBulge = (d1 * d2) / (12.75 * K_FACTOR);
+                if (expectedLine <= (currentElev + earthBulge)) return false; // Blocked
+            }
+            return true; // Clear
+        } catch(e) { return false; } // Fail safe
+    }
+
+    window.assignTUs = async function() {
+        if (aps.length === 0 || tus.length === 0) return logMsg("Need at least 1 AP and 1 TU.", "warn");
+        
+        const btn = document.getElementById('btnAssign'); btn.disabled = true; btn.innerText = "Analyzing Limits & LoS...";
+        
+        assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
+        
+        const maxTuSec = parseInt(document.getElementById('maxTuSector').value);
+        const maxTuAp = parseInt(document.getElementById('maxTuAp').value);
+        const hCpe = parseFloat(document.getElementById('cpeHeight').value);
+
+        // Reset TU visual state
+        tus.forEach(tu => {
+            tu.assignedSector = null; tu.assignedAP = null;
+            if(tuMarkers[tu.id]) { tuMarkers[tu.id].setStyle({color: '#333', fillColor: '#fff'}); tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Unassigned`); }
+        });
+
+        let potentialLinks = [];
+        let checkedLoS = 0;
+
+        // 1. Gather all physically possible links
+        for (let t = 0; t < tus.length; t++) {
+            let tu = tus[t];
+            for (let a = 0; a < aps.length; a++) {
+                let ap = aps[a];
+                const maxRadiusKm = calculateMaxRadii(ap)[0].radiusKm; // BPSK absolute max limit
+                let dist = getDistance(ap.lat, ap.lng, tu.lat, tu.lng);
+                
+                if (dist > maxRadiusKm) continue; // Out of RF range completely
+
+                let bearing = getBearing(ap.lat, ap.lng, tu.lat, tu.lng);
+                let arrayStartAngle = ap.baseAzimuth - ((ap.numSectors * ap.sectorBeamwidth) / 2);
+                
+                for (let s = 0; s < ap.numSectors; s++) {
+                    let sStart = (arrayStartAngle + (s * ap.sectorBeamwidth) + 360) % 360;
+                    let sEnd = (sStart + ap.sectorBeamwidth) % 360;
+                    
+                    let inside = false;
+                    if (sStart < sEnd) { inside = (bearing >= sStart && bearing <= sEnd); } 
+                    else { inside = (bearing >= sStart || bearing <= sEnd); } // Wrap around North
+                    
+                    if (inside) {
+                        // Check explicit Line of Sight for this specific link via API
+                        checkedLoS++;
+                        logMsg(`Checking LoS for TU ${tu.id} to ${ap.name} Sector ${s+1}...`);
+                        let hasLoS = await checkLoSPointToPoint(ap.lat, ap.lng, ap.height, tu.lat, tu.lng, hCpe);
+                        if (hasLoS) {
+                            potentialLinks.push({ tuId: tu.id, apId: ap.id, sIdx: s, dist: dist, apRef: ap });
+                        }
+                    }
+                }
+            }
+        }
+
+        logMsg(`Found ${potentialLinks.length} valid LoS paths. Optimizing capacities...`);
+
+        // 2. Global Distance Sort (The core of the Greedy Optimization)
+        // By sorting ascending, we guarantee short links consume capacity first.
+        potentialLinks.sort((a, b) => a.dist - b.dist);
+
+        let apCounts = {}; 
+        let secCounts = {}; 
+        aps.forEach(ap => { apCounts[ap.id] = 0; secCounts[ap.id] = {}; });
+
+        let assignedCount = 0;
+
+        // 3. Assign
+        for (let i = 0; i < potentialLinks.length; i++) {
+            let link = potentialLinks[i];
+            let tu = tus.find(t => t.id === link.tuId);
+            
+            if (tu.assignedAP !== null) continue; // Already got a better (shorter) assignment
+            
+            if (!secCounts[link.apId][link.sIdx]) secCounts[link.apId][link.sIdx] = 0;
+            
+            // Check Constraints
+            if (secCounts[link.apId][link.sIdx] < maxTuSec && apCounts[link.apId] < maxTuAp) {
+                // Assign!
+                tu.assignedAP = link.apId;
+                tu.assignedSector = link.sIdx;
+                secCounts[link.apId][link.sIdx]++;
+                apCounts[link.apId]++;
+                assignedCount++;
+                
+                // Draw Line
+                let chColor = ['#ff0000', '#00ff00', '#0000ff', '#ff00ff', '#00ffff'][link.apRef.channels[link.sIdx] % 5];
+                let line = L.polyline([[link.apRef.lat, link.apRef.lng], [tu.lat, tu.lng]], {color: chColor, weight: 2}).addTo(map);
+                assignmentLines.push(line);
+                
+                // Update TU Marker
+                if(tuMarkers[tu.id]) {
+                    tuMarkers[tu.id].setStyle({color: chColor, fillColor: chColor});
+                    tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Linked to: ${link.apRef.name}<br>Sector: ${link.sIdx+1}<br>Distance: ${link.dist.toFixed(2)}km`);
+                }
+            }
+        }
+
+        logMsg(`Optimization Complete. Assigned ${assignedCount}/${tus.length} TUs.`);
+        btn.disabled = false; btn.innerText = "2. Run Smart Assignment";
+    }
+
+    // --- VIEWSHED GENERATOR (From previous version) ---
+    window.calculateCoverage = async function() {
+        if (aps.length === 0) return;
+        const btn = document.getElementById('btnCoverage'); btn.disabled = true; btn.innerText = "Processing Sweep...";
+        for (let id in apCoverageLayers) { apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); apCoverageLayers[id] = []; }
+
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
         const K_FACTOR = 1.333;
 
-        // Process every AP
         for (let apIndex = 0; apIndex < aps.length; apIndex++) {
             let activeAP = aps[apIndex];
-            logMsg(`Processing ${activeAP.name}...`);
-
-            // Clear previous coverage for this specific AP
-            if(apCoverageLayers[activeAP.id]) {
-                apCoverageLayers[activeAP.id].forEach(layer => map.removeLayer(layer));
-            }
-            apCoverageLayers[activeAP.id] = [];
-
             const radiiTiers = calculateMaxRadii(activeAP);
             const maxRadiusKm = radiiTiers[0].radiusKm; 
             
-            // Calculate the total spread of the Array, centered on Base Azimuth
             let totalSpread = activeAP.numSectors * activeAP.sectorBeamwidth;
             let arrayStartAngle = activeAP.baseAzimuth - (totalSpread / 2);
             
@@ -460,96 +540,63 @@
                 let startAngle = arrayStartAngle + (s * activeAP.sectorBeamwidth);
                 let endAngle = startAngle + activeAP.sectorBeamwidth;
                 
-                // Draw Geometric Sector Boundaries
                 if (s === 0) {
-                    // Leftmost boundary of the entire array
                     let edgeStart = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, startAngle);
                     let lineStart = L.polyline([[activeAP.lat, activeAP.lng], [edgeStart.lat, edgeStart.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
                     apCoverageLayers[activeAP.id].push(lineStart);
                 }
-                // Right boundary for every sector
                 let edgeEnd = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, endAngle);
                 let lineEnd = L.polyline([[activeAP.lat, activeAP.lng], [edgeEnd.lat, edgeEnd.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
                 apCoverageLayers[activeAP.id].push(lineEnd);
                 
-                let rayPaths = [];
-                const SAMPLES_PER_RAY = 40;
-                
-                // Sweep rays every 2 degrees across this specific sector face
+                let rayPaths = []; const SAMPLES = 40;
                 for (let angle = startAngle; angle <= endAngle; angle += 2) {
                     let pts = [];
-                    for (let i = 0; i < SAMPLES_PER_RAY; i++) {
-                        let dist = (i / (SAMPLES_PER_RAY - 1)) * maxRadiusKm;
-                        if(dist === 0) dist = 0.001; 
+                    for (let i = 0; i < SAMPLES; i++) {
+                        let dist = (i / (SAMPLES - 1)) * maxRadiusKm; if(dist === 0) dist = 0.001; 
                         pts.push(getDestination(activeAP.lat, activeAP.lng, dist, angle));
                     }
                     rayPaths.push(pts);
                 }
 
-                let flatCoords = rayPaths.flat();
-                let elevations = Array(flatCoords.length).fill(0); 
-                
-                const CHUNK_SIZE = 80;
-                for (let i = 0; i < flatCoords.length; i += CHUNK_SIZE) {
-                    let chunk = flatCoords.slice(i, i + CHUNK_SIZE);
-                    let lats = chunk.map(c => c.lat.toFixed(5)).join(',');
-                    let lngs = chunk.map(c => c.lng.toFixed(5)).join(',');
-                    
+                let flatCoords = rayPaths.flat(); let elevations = Array(flatCoords.length).fill(0); 
+                for (let i = 0; i < flatCoords.length; i += 80) {
+                    let chunk = flatCoords.slice(i, i + 80);
+                    let lats = chunk.map(c => c.lat.toFixed(5)).join(','); let lngs = chunk.map(c => c.lng.toFixed(5)).join(',');
                     try {
                         let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`);
-                        if (res.status === 200) {
-                            let data = await res.json();
-                            for(let j=0; j<data.elevation.length; j++) {
-                                elevations[i+j] = data.elevation[j];
-                            }
-                        }
-                    } catch(e) { console.warn("Elevation fetch failed."); }
+                        if (res.status === 200) { let data = await res.json(); for(let j=0; j<data.elevation.length; j++) elevations[i+j] = data.elevation[j]; }
+                    } catch(e) { }
                 }
 
-                // Geometric Shadow Masking
                 for (let r = 0; r < rayPaths.length - 1; r++) {
-                    let currentRay = rayPaths[r];
-                    let nextRay = rayPaths[r+1];
-                    let thetaMax = -90; 
-                    let baseElevation = elevations[r * SAMPLES_PER_RAY]; 
+                    let currentRay = rayPaths[r]; let nextRay = rayPaths[r+1];
+                    let thetaMax = -90; let baseElevation = elevations[r * SAMPLES]; 
                     
-                    for (let i = 1; i < SAMPLES_PER_RAY; i++) {
+                    for (let i = 1; i < SAMPLES; i++) {
                         let distKm = getDistance(activeAP.lat, activeAP.lng, currentRay[i].lat, currentRay[i].lng);
-                        let currentElev = elevations[r * SAMPLES_PER_RAY + i];
-                        
+                        let currentElev = elevations[r * SAMPLES + i];
                         let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
                         let dropH = (currentElev + earthBulge) - (baseElevation + activeAP.height);
                         let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
-                        
                         let beamElevAtDist = (baseElevation + activeAP.height) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
-                        let cpeClearsShadow = (currentElev + hCpe) >= beamElevAtDist;
+                        
+                        if (thetaCurrent > thetaMax) thetaMax = thetaCurrent; 
 
-                        if (thetaCurrent > thetaMax) { thetaMax = thetaCurrent; }
-
-                        if (cpeClearsShadow) {
+                        if ((currentElev + hCpe) >= beamElevAtDist) {
                             let assignedColor = null;
-                            for (let tier of [...radiiTiers].reverse()) { 
-                                if (distKm <= tier.radiusKm) {
-                                    assignedColor = tier.color;
-                                    break;
-                                }
-                            }
-                            
+                            for (let tier of [...radiiTiers].reverse()) { if (distKm <= tier.radiusKm) { assignedColor = tier.color; break; } }
                             if (assignedColor) {
-                                let poly = L.polygon([currentRay[i-1], currentRay[i], nextRay[i], nextRay[i-1]], {
-                                    color: assignedColor, stroke: false, fillOpacity: 0.6
-                                }).addTo(map);
+                                let poly = L.polygon([currentRay[i-1], currentRay[i], nextRay[i], nextRay[i-1]], {color: assignedColor, stroke: false, fillOpacity: 0.6}).addTo(map);
                                 apCoverageLayers[activeAP.id].push(poly);
                             }
                         }
                     }
                 }
-            } // End Sector Loop
-        } // End AP Loop
-        
+            } 
+        } 
         logMsg(`Completed coverage sweep.`);
-        btn.innerText = "Generate Coverage Sweep";
-        btn.disabled = false;
+        btn.innerText = "1. Generate Coverage Sweep"; btn.disabled = false;
     }
 </script>
 
