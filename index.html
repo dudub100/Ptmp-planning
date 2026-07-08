@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PtMP Planner: Capacitated TU Assignment</title>
+    <title>PtMP Planner: Smart Assignment & LoS Controls</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <style>
@@ -38,7 +38,7 @@
         #logBox { height: 120px; min-height: 120px; flex-shrink: 0; background: #1e1e1e; padding: 10px; font-family: monospace; font-size: 11px; overflow-y: auto; border-top: 2px solid #333; box-sizing: border-box; }
         .log-msg { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
         
-        .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.95); padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 5px rgba(0,0,0,0.2);}
+        .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.95); padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 5px rgba(0,0,0,0.2); max-height: 300px; overflow-y: auto;}
         .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
         .legend-color { width: 12px; height: 12px; margin-right: 8px; border: 1px solid #777; border-radius: 2px;}
         
@@ -52,6 +52,13 @@
 <div id="sidebar">
     <div id="sidebar-scroll">
         <h2>1. Global Network Specs</h2>
+        <div class="form-group" style="background: #ffeeba; padding: 8px; border-radius: 4px; border: 1px solid #ffeeba;">
+            <label style="color: #856404; cursor: pointer; display: flex; align-items: center; font-size: 13px;">
+                <input type="checkbox" id="skipLos" style="width: 16px; margin: 0 8px 0 0;"> 
+                Skip LoS (Assume Clear Terrain)
+            </label>
+        </div>
+        
         <div style="display: flex; gap: 5px;">
             <div class="form-group" style="flex: 1;">
                 <label>Frequency (GHz)</label>
@@ -162,12 +169,20 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
     setTimeout(() => { map.invalidateSize(); }, 500);
 
+    // --- FULL WI-FI 7 MCS TABLE (0 to 11) ---
     const MCS_TABLE = [
-        {mcs: 0, mod: "BPSK", snr: 2, baseCap: 34.03, color: '#ff0000'},
-        {mcs: 2, mod: "QPSK", snr: 8, baseCap: 102.08, color: '#ff8c00'},
-        {mcs: 5, mod: "64-QAM", snr: 16, baseCap: 272.22, color: '#ffff00'},
-        {mcs: 8, mod: "256-QAM", snr: 24, baseCap: 408.33, color: '#00ff00'},
-        {mcs: 11, mod: "1024-QAM", snr: 33, baseCap: 567.13, color: '#0000ff'}
+        {mcs: 0,  mod: "BPSK 1/2",     snr: 2,  baseCap: 34.03,  color: '#ff0000'},
+        {mcs: 1,  mod: "QPSK 1/2",     snr: 5,  baseCap: 68.06,  color: '#ff4500'},
+        {mcs: 2,  mod: "QPSK 3/4",     snr: 8,  baseCap: 102.08, color: '#ff8c00'},
+        {mcs: 3,  mod: "16-QAM 1/2",   snr: 11, baseCap: 136.11, color: '#ffa500'},
+        {mcs: 4,  mod: "16-QAM 3/4",   snr: 14, baseCap: 204.17, color: '#ffd700'},
+        {mcs: 5,  mod: "64-QAM 2/3",   snr: 16, baseCap: 272.22, color: '#ffff00'},
+        {mcs: 6,  mod: "64-QAM 3/4",   snr: 18, baseCap: 306.25, color: '#adff2f'},
+        {mcs: 7,  mod: "64-QAM 5/6",   snr: 21, baseCap: 340.28, color: '#7fff00'},
+        {mcs: 8,  mod: "256-QAM 3/4",  snr: 24, baseCap: 408.33, color: '#00ff00'},
+        {mcs: 9,  mod: "256-QAM 5/6",  snr: 27, baseCap: 453.70, color: '#00fa9a'},
+        {mcs: 10, mod: "1024-QAM 3/4", snr: 30, baseCap: 510.42, color: '#00ced1'},
+        {mcs: 11, mod: "1024-QAM 5/6", snr: 33, baseCap: 567.13, color: '#0000ff'}
     ];
 
     let currentMode = 'AP';
@@ -185,7 +200,7 @@
         legendBox.innerHTML = '<div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones</div>';
         [...MCS_TABLE].reverse().forEach(tier => {
             const currentCap = (tier.baseCap * (bw / 80)).toFixed(1);
-            legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} - <b>${currentCap} Mbps</b></div>`;
+            legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} (${tier.mod}) - <b>${currentCap} Mbps</b></div>`;
         });
     }
     updateLegend();
@@ -195,6 +210,47 @@
         let color = '#4caf50'; if (type === 'warn') color = '#ffeb3b'; if (type === 'error') color = '#f44336'; 
         logBox.innerHTML += `<div class="log-msg" style="color: ${color}">${msg}</div>`;
         logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // --- API FALLBACK ENGINE ---
+    // Try Open-Elevation -> Open-Meteo -> OpenTopoData
+    async function fetchElevation(latsArray, lngsArray) {
+        let latsComma = latsArray.join(',');
+        let lngsComma = lngsArray.join(',');
+        let locStringPipe = latsArray.map((lat, i) => `${lat},${lngsArray[i]}`).join('|');
+
+        // Helper to implement strict timeout
+        const fetchWithTimeout = async (url, ms = 4000) => {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), ms);
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(id);
+            return response;
+        };
+
+        // 1. Open-Elevation (Requested Primary)
+        try {
+            logMsg("Attempting Open-Elevation API...", "info");
+            let res = await fetchWithTimeout(`https://api.open-elevation.com/api/v1/lookup?locations=${locStringPipe}`, 4000);
+            if(res.ok) { let data = await res.json(); return data.results.map(r => r.elevation); }
+        } catch(e) { logMsg("Open-Elevation failed or timed out.", "warn"); }
+
+        // 2. Open-Meteo
+        try {
+            logMsg("Attempting Open-Meteo API...", "info");
+            let res = await fetchWithTimeout(`https://api.open-meteo.com/v1/elevation?latitude=${latsComma}&longitude=${lngsComma}`, 4000);
+            if(res.ok) { let data = await res.json(); return data.elevation; }
+        } catch(e) { logMsg("Open-Meteo failed or timed out.", "warn"); }
+
+        // 3. OpenTopoData
+        try {
+            logMsg("Attempting OpenTopoData API...", "info");
+            let res = await fetchWithTimeout(`https://api.opentopodata.org/v1/srtm90m?locations=${locStringPipe}`, 4000);
+            if(res.ok) { let data = await res.json(); return data.results.map(r => r.elevation); }
+        } catch(e) { logMsg("OpenTopoData failed. Returning 0m elevation.", "error"); }
+
+        // Failsafe
+        return Array(latsArray.length).fill(0);
     }
 
     // --- UI TOGGLE ---
@@ -209,11 +265,8 @@
 
     // --- MAP CLICK HANDLER ---
     map.on('click', function(e) {
-        if (currentMode === 'AP') {
-            deployAP(e.latlng.lat, e.latlng.lng);
-        } else {
-            deployTU(e.latlng.lat, e.latlng.lng);
-        }
+        if (currentMode === 'AP') { deployAP(e.latlng.lat, e.latlng.lng); } 
+        else { deployTU(e.latlng.lat, e.latlng.lng); }
     });
 
     function deployAP(lat, lng) {
@@ -392,6 +445,8 @@
 
     // --- ASSIGNMENT ENGINE ---
     async function checkLoSPointToPoint(lat1, lon1, h1, lat2, lon2, h2) {
+        if(document.getElementById('skipLos').checked) return true; // USER BYPASS
+
         const distKm = getDistance(lat1, lon1, lat2, lon2);
         let SAMPLES = Math.floor(distKm * 1000 / 90); if (SAMPLES < 10) SAMPLES = 10;
         
@@ -401,27 +456,24 @@
             lngs.push((lon1 + (lon2 - lon1) * (i / (SAMPLES - 1))).toFixed(5));
         }
         
-        try {
-            let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats.join(',')}&longitude=${lngs.join(',')}`);
-            let data = await res.json();
-            if (!data.elevation) return false;
-            
-            const K_FACTOR = 1.333;
-            for (let i = 1; i < SAMPLES - 1; i++) {
-                let currentElev = data.elevation[i];
-                let expectedLine = (data.elevation[0] + h1) + ((data.elevation[SAMPLES-1] + h2) - (data.elevation[0] + h1)) * (i / (SAMPLES - 1));
-                let d1 = distKm * (i / (SAMPLES - 1)); let d2 = distKm - d1;
-                let earthBulge = (d1 * d2) / (12.75 * K_FACTOR);
-                if (expectedLine <= (currentElev + earthBulge)) return false; // Blocked
-            }
-            return true; // Clear
-        } catch(e) { return false; } // Fail safe
+        let elevations = await fetchElevation(lats, lngs);
+        if(!elevations || elevations.length === 0) return false;
+
+        const K_FACTOR = 1.333;
+        for (let i = 1; i < SAMPLES - 1; i++) {
+            let currentElev = elevations[i];
+            let expectedLine = (elevations[0] + h1) + ((elevations[SAMPLES-1] + h2) - (elevations[0] + h1)) * (i / (SAMPLES - 1));
+            let d1 = distKm * (i / (SAMPLES - 1)); let d2 = distKm - d1;
+            let earthBulge = (d1 * d2) / (12.75 * K_FACTOR);
+            if (expectedLine <= (currentElev + earthBulge)) return false; // Blocked
+        }
+        return true; // Clear
     }
 
     window.assignTUs = async function() {
         if (aps.length === 0 || tus.length === 0) return logMsg("Need at least 1 AP and 1 TU.", "warn");
         
-        const btn = document.getElementById('btnAssign'); btn.disabled = true; btn.innerText = "Analyzing Limits & LoS...";
+        const btn = document.getElementById('btnAssign'); btn.disabled = true; btn.innerText = "Analyzing Constraints & LoS...";
         
         assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
         
@@ -436,17 +488,16 @@
         });
 
         let potentialLinks = [];
-        let checkedLoS = 0;
 
         // 1. Gather all physically possible links
         for (let t = 0; t < tus.length; t++) {
             let tu = tus[t];
             for (let a = 0; a < aps.length; a++) {
                 let ap = aps[a];
-                const maxRadiusKm = calculateMaxRadii(ap)[0].radiusKm; // BPSK absolute max limit
+                const maxRadiusKm = calculateMaxRadii(ap)[0].radiusKm; // BPSK limit
                 let dist = getDistance(ap.lat, ap.lng, tu.lat, tu.lng);
                 
-                if (dist > maxRadiusKm) continue; // Out of RF range completely
+                if (dist > maxRadiusKm) continue;
 
                 let bearing = getBearing(ap.lat, ap.lng, tu.lat, tu.lng);
                 let arrayStartAngle = ap.baseAzimuth - ((ap.numSectors * ap.sectorBeamwidth) / 2);
@@ -457,57 +508,44 @@
                     
                     let inside = false;
                     if (sStart < sEnd) { inside = (bearing >= sStart && bearing <= sEnd); } 
-                    else { inside = (bearing >= sStart || bearing <= sEnd); } // Wrap around North
+                    else { inside = (bearing >= sStart || bearing <= sEnd); } 
                     
                     if (inside) {
-                        // Check explicit Line of Sight for this specific link via API
-                        checkedLoS++;
-                        logMsg(`Checking LoS for TU ${tu.id} to ${ap.name} Sector ${s+1}...`);
                         let hasLoS = await checkLoSPointToPoint(ap.lat, ap.lng, ap.height, tu.lat, tu.lng, hCpe);
-                        if (hasLoS) {
-                            potentialLinks.push({ tuId: tu.id, apId: ap.id, sIdx: s, dist: dist, apRef: ap });
-                        }
+                        if (hasLoS) potentialLinks.push({ tuId: tu.id, apId: ap.id, sIdx: s, dist: dist, apRef: ap });
                     }
                 }
             }
         }
 
-        logMsg(`Found ${potentialLinks.length} valid LoS paths. Optimizing capacities...`);
-
-        // 2. Global Distance Sort (The core of the Greedy Optimization)
-        // By sorting ascending, we guarantee short links consume capacity first.
+        // 2. Global Distance Sort
         potentialLinks.sort((a, b) => a.dist - b.dist);
 
-        let apCounts = {}; 
-        let secCounts = {}; 
+        let apCounts = {}; let secCounts = {}; 
         aps.forEach(ap => { apCounts[ap.id] = 0; secCounts[ap.id] = {}; });
 
         let assignedCount = 0;
 
-        // 3. Assign
+        // 3. Greedy Assign
         for (let i = 0; i < potentialLinks.length; i++) {
             let link = potentialLinks[i];
             let tu = tus.find(t => t.id === link.tuId);
             
-            if (tu.assignedAP !== null) continue; // Already got a better (shorter) assignment
-            
+            if (tu.assignedAP !== null) continue; 
             if (!secCounts[link.apId][link.sIdx]) secCounts[link.apId][link.sIdx] = 0;
             
-            // Check Constraints
+            // Apply MAC/Scheduler Constraints
             if (secCounts[link.apId][link.sIdx] < maxTuSec && apCounts[link.apId] < maxTuAp) {
-                // Assign!
                 tu.assignedAP = link.apId;
                 tu.assignedSector = link.sIdx;
                 secCounts[link.apId][link.sIdx]++;
                 apCounts[link.apId]++;
                 assignedCount++;
                 
-                // Draw Line
                 let chColor = ['#ff0000', '#00ff00', '#0000ff', '#ff00ff', '#00ffff'][link.apRef.channels[link.sIdx] % 5];
                 let line = L.polyline([[link.apRef.lat, link.apRef.lng], [tu.lat, tu.lng]], {color: chColor, weight: 2}).addTo(map);
                 assignmentLines.push(line);
                 
-                // Update TU Marker
                 if(tuMarkers[tu.id]) {
                     tuMarkers[tu.id].setStyle({color: chColor, fillColor: chColor});
                     tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Linked to: ${link.apRef.name}<br>Sector: ${link.sIdx+1}<br>Distance: ${link.dist.toFixed(2)}km`);
@@ -519,7 +557,7 @@
         btn.disabled = false; btn.innerText = "2. Run Smart Assignment";
     }
 
-    // --- VIEWSHED GENERATOR (From previous version) ---
+    // --- VIEWSHED GENERATOR ---
     window.calculateCoverage = async function() {
         if (aps.length === 0) return;
         const btn = document.getElementById('btnCoverage'); btn.disabled = true; btn.innerText = "Processing Sweep...";
@@ -527,6 +565,7 @@
 
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
         const K_FACTOR = 1.333;
+        const skipLos = document.getElementById('skipLos').checked;
 
         for (let apIndex = 0; apIndex < aps.length; apIndex++) {
             let activeAP = aps[apIndex];
@@ -540,6 +579,7 @@
                 let startAngle = arrayStartAngle + (s * activeAP.sectorBeamwidth);
                 let endAngle = startAngle + activeAP.sectorBeamwidth;
                 
+                // Draw Sector Borders
                 if (s === 0) {
                     let edgeStart = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, startAngle);
                     let lineStart = L.polyline([[activeAP.lat, activeAP.lng], [edgeStart.lat, edgeStart.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
@@ -548,47 +588,65 @@
                 let edgeEnd = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, endAngle);
                 let lineEnd = L.polyline([[activeAP.lat, activeAP.lng], [edgeEnd.lat, edgeEnd.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
                 apCoverageLayers[activeAP.id].push(lineEnd);
-                
-                let rayPaths = []; const SAMPLES = 40;
-                for (let angle = startAngle; angle <= endAngle; angle += 2) {
-                    let pts = [];
-                    for (let i = 0; i < SAMPLES; i++) {
-                        let dist = (i / (SAMPLES - 1)) * maxRadiusKm; if(dist === 0) dist = 0.001; 
-                        pts.push(getDestination(activeAP.lat, activeAP.lng, dist, angle));
+
+                if(skipLos) {
+                    // FAST MODE: Draw concentric wedges
+                    let centerPts = [];
+                    // Generate points along the arc for the polygon
+                    for(let a = startAngle; a <= endAngle; a+=2) {
+                        centerPts.push(getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, a));
                     }
-                    rayPaths.push(pts);
-                }
-
-                let flatCoords = rayPaths.flat(); let elevations = Array(flatCoords.length).fill(0); 
-                for (let i = 0; i < flatCoords.length; i += 80) {
-                    let chunk = flatCoords.slice(i, i + 80);
-                    let lats = chunk.map(c => c.lat.toFixed(5)).join(','); let lngs = chunk.map(c => c.lng.toFixed(5)).join(',');
-                    try {
-                        let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`);
-                        if (res.status === 200) { let data = await res.json(); for(let j=0; j<data.elevation.length; j++) elevations[i+j] = data.elevation[j]; }
-                    } catch(e) { }
-                }
-
-                for (let r = 0; r < rayPaths.length - 1; r++) {
-                    let currentRay = rayPaths[r]; let nextRay = rayPaths[r+1];
-                    let thetaMax = -90; let baseElevation = elevations[r * SAMPLES]; 
                     
-                    for (let i = 1; i < SAMPLES; i++) {
-                        let distKm = getDistance(activeAP.lat, activeAP.lng, currentRay[i].lat, currentRay[i].lng);
-                        let currentElev = elevations[r * SAMPLES + i];
-                        let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
-                        let dropH = (currentElev + earthBulge) - (baseElevation + activeAP.height);
-                        let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
-                        let beamElevAtDist = (baseElevation + activeAP.height) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
-                        
-                        if (thetaCurrent > thetaMax) thetaMax = thetaCurrent; 
+                    [...radiiTiers].reverse().forEach(tier => {
+                        let arcPts = [[activeAP.lat, activeAP.lng]];
+                        for(let a = startAngle; a <= endAngle; a+=2) {
+                            arcPts.push(getDestination(activeAP.lat, activeAP.lng, tier.radiusKm, a));
+                        }
+                        let poly = L.polygon(arcPts, {color: tier.color, stroke: false, fillOpacity: 0.5}).addTo(map);
+                        apCoverageLayers[activeAP.id].push(poly);
+                    });
+                    
+                } else {
+                    // TERRAIN MODE: Radial Sweep
+                    let rayPaths = []; const SAMPLES = 40;
+                    for (let angle = startAngle; angle <= endAngle; angle += 2) {
+                        let pts = [];
+                        for (let i = 0; i < SAMPLES; i++) {
+                            let dist = (i / (SAMPLES - 1)) * maxRadiusKm; if(dist === 0) dist = 0.001; 
+                            pts.push(getDestination(activeAP.lat, activeAP.lng, dist, angle));
+                        }
+                        rayPaths.push(pts);
+                    }
 
-                        if ((currentElev + hCpe) >= beamElevAtDist) {
-                            let assignedColor = null;
-                            for (let tier of [...radiiTiers].reverse()) { if (distKm <= tier.radiusKm) { assignedColor = tier.color; break; } }
-                            if (assignedColor) {
-                                let poly = L.polygon([currentRay[i-1], currentRay[i], nextRay[i], nextRay[i-1]], {color: assignedColor, stroke: false, fillOpacity: 0.6}).addTo(map);
-                                apCoverageLayers[activeAP.id].push(poly);
+                    let flatCoords = rayPaths.flat(); let elevations = Array(flatCoords.length).fill(0); 
+                    for (let i = 0; i < flatCoords.length; i += 80) {
+                        let chunk = flatCoords.slice(i, i + 80);
+                        let lats = chunk.map(c => c.lat.toFixed(5)); let lngs = chunk.map(c => c.lng.toFixed(5));
+                        let chunkElev = await fetchElevation(lats, lngs);
+                        for(let j=0; j<chunkElev.length; j++) elevations[i+j] = chunkElev[j];
+                    }
+
+                    for (let r = 0; r < rayPaths.length - 1; r++) {
+                        let currentRay = rayPaths[r]; let nextRay = rayPaths[r+1];
+                        let thetaMax = -90; let baseElevation = elevations[r * SAMPLES]; 
+                        
+                        for (let i = 1; i < SAMPLES; i++) {
+                            let distKm = getDistance(activeAP.lat, activeAP.lng, currentRay[i].lat, currentRay[i].lng);
+                            let currentElev = elevations[r * SAMPLES + i];
+                            let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
+                            let dropH = (currentElev + earthBulge) - (baseElevation + activeAP.height);
+                            let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
+                            let beamElevAtDist = (baseElevation + activeAP.height) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
+                            
+                            if (thetaCurrent > thetaMax) thetaMax = thetaCurrent; 
+
+                            if ((currentElev + hCpe) >= beamElevAtDist) {
+                                let assignedColor = null;
+                                for (let tier of [...radiiTiers].reverse()) { if (distKm <= tier.radiusKm) { assignedColor = tier.color; break; } }
+                                if (assignedColor) {
+                                    let poly = L.polygon([currentRay[i-1], currentRay[i], nextRay[i], nextRay[i-1]], {color: assignedColor, stroke: false, fillOpacity: 0.6}).addTo(map);
+                                    apCoverageLayers[activeAP.id].push(poly);
+                                }
                             }
                         }
                     }
