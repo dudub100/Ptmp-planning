@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PtMP Planner: Viewshed & Capacity</title>
+    <title>PtMP Planner: mmWave Viewshed & Capacity</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <style>
@@ -22,7 +22,7 @@
         #logBox { height: 150px; min-height: 150px; flex-shrink: 0; background: #1e1e1e; padding: 10px; font-family: monospace; font-size: 11px; overflow-y: auto; border-top: 2px solid #333; box-sizing: border-box; }
         .log-msg { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
         
-        .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.9); padding: 10px; border-radius: 4px; border: 1px solid #ccc; }
+        .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.9); padding: 10px; border-radius: 4px; border: 1px solid #ccc; max-height: 400px; overflow-y: auto;}
         .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
         .legend-color { width: 12px; height: 12px; margin-right: 8px; border: 1px solid #777; border-radius: 2px;}
     </style>
@@ -32,13 +32,28 @@
 <div id="sidebar">
     <div id="sidebar-scroll">
         <h2>1. Environmental & Link Specs</h2>
-        <div class="form-group">
-            <label>Frequency (GHz)</label>
-            <select id="freqSelect">
-                <option value="5">5 GHz (Sub-6)</option>
-                <option value="26" selected>26 GHz (mmWave)</option>
-                <option value="60">60 GHz (V-Band)</option>
-            </select>
+        <div style="display: flex; gap: 5px;">
+            <div class="form-group" style="flex: 1;">
+                <label>Frequency (GHz)</label>
+                <select id="freqSelect">
+                    <option value="26" selected>26 GHz</option>
+                    <option value="28">28 GHz</option>
+                    <option value="31">31 GHz</option>
+                    <option value="39">39 GHz</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label>Channel BW (MHz)</label>
+                <select id="channelBw" onchange="updateLegend()">
+                    <option value="20">20 MHz</option>
+                    <option value="40">40 MHz</option>
+                    <option value="60">60 MHz</option>
+                    <option value="80" selected>80 MHz</option>
+                    <option value="140">140 MHz</option>
+                    <option value="160">160 MHz</option>
+                    <option value="320">320 MHz</option>
+                </select>
+            </div>
         </div>
         <div class="form-group">
             <label>Availability Target (%)</label>
@@ -104,33 +119,58 @@
 
 <div id="map">
     <div class="legend" id="capLegend">
-        <div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones (Wi-Fi 7)</div>
         </div>
 </div>
 
 <script>
-    // --- MAP INITIALIZATION (Centered near Rosh Haayin) ---
+    // --- MAP INITIALIZATION ---
     const map = L.map('map').setView([32.095, 34.956], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
     setTimeout(() => { map.invalidateSize(); }, 500);
 
-    // --- WI-FI 7 MCS TABLE ---
+    // --- WI-FI 7 FULL MCS TABLE (0 to 11) ---
+    // Base capacities reflect standard 80MHz channel. Scaled dynamically based on UI selection.
     const MCS_TABLE = [
-        {mcs: 0,  mod: "BPSK",     snr: 2,  color: '#ff0000'},
-        {mcs: 2,  mod: "QPSK",     snr: 8,  color: '#ff8c00'},
-        {mcs: 5,  mod: "64-QAM",   snr: 16, color: '#ffff00'},
-        {mcs: 8,  mod: "256-QAM",  snr: 24, color: '#00ff00'},
-        {mcs: 10, mod: "1024-QAM", snr: 30, color: '#00ced1'}
+        {mcs: 0,  mod: "BPSK",     snr: 2,  baseCap: 34.03,  color: '#ff0000'},
+        {mcs: 1,  mod: "QPSK",     snr: 5,  baseCap: 68.06,  color: '#ff4500'},
+        {mcs: 2,  mod: "QPSK",     snr: 8,  baseCap: 102.08, color: '#ff8c00'},
+        {mcs: 3,  mod: "16-QAM",   snr: 11, baseCap: 136.11, color: '#ffa500'},
+        {mcs: 4,  mod: "16-QAM",   snr: 14, baseCap: 204.17, color: '#ffd700'},
+        {mcs: 5,  mod: "64-QAM",   snr: 16, baseCap: 272.22, color: '#ffff00'},
+        {mcs: 6,  mod: "64-QAM",   snr: 18, baseCap: 306.25, color: '#adff2f'},
+        {mcs: 7,  mod: "64-QAM",   snr: 21, baseCap: 340.28, color: '#7fff00'},
+        {mcs: 8,  mod: "256-QAM",  snr: 24, baseCap: 408.33, color: '#00ff00'},
+        {mcs: 9,  mod: "256-QAM",  snr: 27, baseCap: 453.70, color: '#00fa9a'},
+        {mcs: 10, mod: "1024-QAM", snr: 30, baseCap: 510.42, color: '#00ced1'},
+        {mcs: 11, mod: "1024-QAM", snr: 33, baseCap: 567.13, color: '#0000ff'}
     ];
 
     let currentAP = null;
     let coverageLayers = [];
 
-    // Populate Legend
-    const legendBox = document.getElementById('capLegend');
-    [...MCS_TABLE].reverse().forEach(tier => {
-        legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} (${tier.mod})</div>`;
-    });
+    // --- DYNAMIC LEGEND & CAPACITY CALCULATOR ---
+    function getCapacityForBw(baseCap80, currentBw) {
+        // Linearly scale capacity based on BW ratio
+        return (baseCap80 * (currentBw / 80)).toFixed(1);
+    }
+
+    function updateLegend() {
+        const bw = parseFloat(document.getElementById('channelBw').value);
+        const legendBox = document.getElementById('capLegend');
+        legendBox.innerHTML = '<div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones</div>';
+        
+        [...MCS_TABLE].reverse().forEach(tier => {
+            const currentCap = getCapacityForBw(tier.baseCap, bw);
+            legendBox.innerHTML += `
+                <div class="legend-item">
+                    <div class="legend-color" style="background: ${tier.color};"></div>
+                    MCS ${tier.mcs} (${tier.mod}) - <b>${currentCap} Mbps</b>
+                </div>`;
+        });
+    }
+    
+    // Initialize Legend
+    updateLegend();
 
     function logMsg(msg, type='info') {
         const logBox = document.getElementById('logBox');
@@ -175,19 +215,22 @@
     // --- STEP 1: LINK BUDGET & RAIN FADE (JS Approximation) ---
     function calculateMaxRadii() {
         const freq = parseFloat(document.getElementById('freqSelect').value);
+        const bw = parseFloat(document.getElementById('channelBw').value);
         const txPower = parseFloat(document.getElementById('apTx').value);
         const txGain = parseFloat(document.getElementById('apGain').value);
         const rxGain = parseFloat(document.getElementById('cpeGain').value);
         const nf = parseFloat(document.getElementById('cpeNf').value);
         const avail = parseFloat(document.getElementById('availSelect').value);
         
-        const bwHz = 80 * 1e6; // Assume 80MHz channel
+        const bwHz = bw * 1e6; 
         const noiseFloor = -174 + (10 * Math.log10(bwHz)) + nf;
         
-        // Simplified specific attenuation (dB/km) based on typical ITU-R models for heavy rain regions
-        let gamma = 0.01; // Baseline gas absorption
-        if (freq === 26) gamma = (avail >= 99.99) ? 6.5 : 2.5; // Heavy rain penalty for mmWave
-        if (freq === 60) gamma = 15.0 + ((avail >= 99.99) ? 8.0 : 3.0); // Oxygen + Rain
+        // Approximate Rain & Gas Attenuation based on ITU-R for specific frequencies
+        let gamma = 0.01; 
+        if (freq === 26) gamma = (avail >= 99.99) ? 6.5 : 2.5;
+        if (freq === 28) gamma = (avail >= 99.99) ? 7.0 : 3.0;
+        if (freq === 31) gamma = (avail >= 99.99) ? 8.5 : 4.0;
+        if (freq === 39) gamma = (avail >= 99.99) ? 12.0 : 6.0;
 
         let results = [];
         
@@ -230,24 +273,21 @@
         const hTower = parseFloat(document.getElementById('apHeight').value);
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
         
-        // 1. Get theoretical RF range limits
         const radiiTiers = calculateMaxRadii();
-        const maxRadiusKm = radiiTiers[0].radiusKm; // The furthest we can possibly reach (BPSK)
+        const maxRadiusKm = radiiTiers[0].radiusKm; // Max reach at MCS0
         
-        logMsg(`Max Theoretical RF Range: ${maxRadiusKm.toFixed(2)} km`);
+        logMsg(`Max Theoretical RF Range (MCS0): ${maxRadiusKm.toFixed(2)} km`);
 
-        // 2. Define the Rays (Step by 2 degrees to avoid API bans)
         let startAngle = azimuth - (beamwidth / 2);
         let endAngle = azimuth + (beamwidth / 2);
         let rayPaths = [];
-        
         const SAMPLES_PER_RAY = 40;
         
         for (let angle = startAngle; angle <= endAngle; angle += 2) {
             let pts = [];
             for (let i = 0; i < SAMPLES_PER_RAY; i++) {
                 let dist = (i / (SAMPLES_PER_RAY - 1)) * maxRadiusKm;
-                if(dist === 0) dist = 0.001; // Avoid divide by zero
+                if(dist === 0) dist = 0.001; 
                 pts.push(getDestination(apLat, apLng, dist, angle));
             }
             rayPaths.push(pts);
@@ -255,11 +295,9 @@
 
         logMsg(`Casting ${rayPaths.length} Rays... Fetching Elevation Data.`);
 
-        // 3. Batch Fetch Elevation (Flatten arrays to send fewer requests)
         let flatCoords = rayPaths.flat();
-        let elevations = Array(flatCoords.length).fill(0); // Default flat if API fails
+        let elevations = Array(flatCoords.length).fill(0); 
         
-        // Ensure we don't exceed Open-Meteo URL length limits by chunking
         const CHUNK_SIZE = 80;
         for (let i = 0; i < flatCoords.length; i += CHUNK_SIZE) {
             let chunk = flatCoords.slice(i, i + CHUNK_SIZE);
@@ -279,38 +317,33 @@
 
         logMsg("Applying shadow detection geometry...");
 
-        // 4. Apply The Shadow Algorithm along each ray
         const K_FACTOR = 1.333;
-        let finalPolygons = []; // Format: { tierColor, latlngs }
 
         for (let r = 0; r < rayPaths.length - 1; r++) {
             let currentRay = rayPaths[r];
             let nextRay = rayPaths[r+1];
             
-            let thetaMax = -90; // The tracking angle variable
+            let thetaMax = -90; 
             let baseElevation = elevations[r * SAMPLES_PER_RAY]; 
             
             for (let i = 1; i < SAMPLES_PER_RAY; i++) {
                 let distKm = getDistance(apLat, apLng, currentRay[i].lat, currentRay[i].lng);
                 let currentElev = elevations[r * SAMPLES_PER_RAY + i];
                 
-                // Calculate geometric viewing angle
                 let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
                 let dropH = (currentElev + earthBulge) - (baseElevation + hTower);
                 let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
                 
-                // Is this point in shadow? (Target CPE height must clear the beam trajectory)
                 let beamElevAtDist = (baseElevation + hTower) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
                 let cpeClearsShadow = (currentElev + hCpe) >= beamElevAtDist;
 
                 if (thetaCurrent > thetaMax) {
-                    thetaMax = thetaCurrent; // Update peak trajectory
+                    thetaMax = thetaCurrent; 
                 }
 
                 if (cpeClearsShadow) {
-                    // It has LoS! Determine which MCS capacity tier it falls into
                     let assignedColor = null;
-                    for (let tier of [...radiiTiers].reverse()) { // Check highest capacity first
+                    for (let tier of [...radiiTiers].reverse()) { 
                         if (distKm <= tier.radiusKm) {
                             assignedColor = tier.color;
                             break;
@@ -318,7 +351,6 @@
                     }
                     
                     if (assignedColor) {
-                        // Create a tiny trapezoid polygon connecting to the adjacent ray to render the heat block
                         let p1 = currentRay[i-1];
                         let p2 = currentRay[i];
                         let p3 = nextRay[i];
