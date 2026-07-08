@@ -19,14 +19,16 @@
         button:hover { background: #0056b3; }
         .btn-success { background: #28a745; }
         .btn-success:hover { background: #218838; }
-        .btn-danger { background: #dc3545; padding: 4px; font-size: 11px;}
+        .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 11px; width: auto; flex-shrink: 0;}
         .btn-danger:hover { background: #c82333; }
+        .btn-toggle { background: #e9ecef; color: #333; width: 24px; height: 24px; padding: 0; display: flex; align-items: center; justify-content: center; margin-right: 8px; border: 1px solid #ccc;}
+        .btn-toggle:hover { background: #dde0e3; }
         .btn-clear { background: #6c757d; margin-top: 10px;}
         
         /* AP Card Styling */
         .ap-card { background: #fff; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .ap-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; border-bottom: 1px dashed #eee; padding-bottom: 5px;}
-        .ap-card-header input { font-weight: bold; border: none; background: transparent; font-size: 14px; width: 70%; color: #007bff; border-bottom: 1px solid transparent;}
+        .ap-card-header { display: flex; align-items: center; margin-bottom: 8px; }
+        .ap-card-header input { font-weight: bold; border: none; background: transparent; font-size: 14px; flex-grow: 1; color: #007bff; border-bottom: 1px solid transparent; margin-right: 10px;}
         .ap-card-header input:focus { border-bottom: 1px solid #007bff; outline: none; }
         
         .sector-box { background: #f1f3f5; padding: 8px; border-radius: 4px; margin-top: 8px; border: 1px solid #e9ecef; }
@@ -95,7 +97,21 @@
 
         <hr style="border: 0; border-top: 1px solid #ccc; margin: 15px 0;">
         
-        <h2>2. Base Station Management</h2>
+        <h2>2. Default AP Deployment Settings</h2>
+        <div style="display: flex; gap: 5px;">
+            <div class="form-group" style="flex: 1;">
+                <label>Num Sectors</label>
+                <input type="number" id="defSectors" value="4" min="1" max="12">
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label>Sector BW (°)</label>
+                <input type="number" id="defBeamwidth" value="90" min="10" max="360">
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label>Array Azimuth</label>
+                <input type="number" id="defAzimuth" value="0">
+            </div>
+        </div>
         <div style="font-size: 11px; color: #666; margin-bottom: 10px;">Click anywhere on the map to deploy a new Base Station.</div>
         
         <div id="apContainer"></div>
@@ -137,10 +153,10 @@
     ];
 
     // --- STATE MANAGEMENT ---
-    let aps = []; // The master array holding all AP objects
+    let aps = []; 
     let apCounter = 1;
-    let apMarkers = {}; // Ties map markers to AP IDs
-    let coverageLayers = [];
+    let apMarkers = {}; 
+    let apCoverageLayers = {}; // Tracks drawn layers per AP ID for clean deletion
 
     // --- DYNAMIC LEGEND ---
     function updateLegend() {
@@ -169,9 +185,11 @@
     }
 
     // --- AP MANAGEMENT LOGIC ---
-
-    // 1. Add AP on map click
     map.on('click', function(e) {
+        const defSectors = parseInt(document.getElementById('defSectors').value) || 4;
+        const defBW = parseFloat(document.getElementById('defBeamwidth').value) || 90;
+        const defAz = parseFloat(document.getElementById('defAzimuth').value) || 0;
+
         const newAP = {
             id: apCounter,
             name: `Base Station ${apCounter}`,
@@ -180,15 +198,22 @@
             height: 30,
             txPower: 23,
             apGain: 20,
-            baseAzimuth: 0,
-            numSectors: 4,
-            beamwidth: 90, // Calculated: 360 / 4
-            channels: [1, 2, 1, 2] // Smart default for 4 sectors (ABAB)
+            baseAzimuth: defAz, // Center of the entire array
+            numSectors: defSectors,
+            sectorBeamwidth: defBW,
+            channels: [], 
+            collapsed: false
         };
         
-        aps.push(newAP);
+        // Smart Channel Auto-Fill (Reuse every 2 or 3)
+        let reuseFactor = (newAP.numSectors === 3) ? 3 : 2; 
+        for(let i = 0; i < newAP.numSectors; i++) {
+            newAP.channels.push((i % reuseFactor) + 1);
+        }
         
-        // Drop Marker
+        aps.push(newAP);
+        apCoverageLayers[newAP.id] = []; 
+        
         let marker = L.marker([newAP.lat, newAP.lng]).addTo(map);
         marker.bindPopup(`<b>${newAP.name}</b><br>${newAP.numSectors} Sectors`);
         apMarkers[newAP.id] = marker;
@@ -200,7 +225,14 @@
         logMsg(`Deployed ${newAP.name} at ${newAP.lat.toFixed(4)}, ${newAP.lng.toFixed(4)}`);
     });
 
-    // 2. Render the sidebar UI based on the `aps` array
+    function toggleCollapse(id) {
+        let ap = aps.find(a => a.id === id);
+        if(ap) {
+            ap.collapsed = !ap.collapsed;
+            renderAPList();
+        }
+    }
+
     function renderAPList() {
         const container = document.getElementById('apContainer');
         container.innerHTML = "";
@@ -209,8 +241,7 @@
             document.getElementById('btnCoverage').disabled = true;
         }
 
-        aps.forEach((ap, index) => {
-            // Generate channel input grid dynamically
+        aps.forEach((ap) => {
             let channelsHtml = '';
             ap.channels.forEach((ch, sIdx) => {
                 channelsHtml += `
@@ -223,48 +254,50 @@
 
             const card = document.createElement('div');
             card.className = 'ap-card';
+            
             card.innerHTML = `
                 <div class="ap-card-header">
+                    <button class="btn-toggle" onclick="toggleCollapse(${ap.id})">${ap.collapsed ? '+' : '-'}</button>
                     <input type="text" value="${ap.name}" onchange="updateAP(${ap.id}, 'name', this.value)">
-                    <button class="btn-danger" style="width: auto;" onclick="deleteAP(${ap.id})">Remove</button>
+                    <button class="btn-danger" onclick="deleteAP(${ap.id})">X</button>
                 </div>
                 
-                <div style="display: flex; gap: 5px;">
-                    <div class="form-group" style="flex: 1;">
-                        <label>Tx (dBm)</label>
-                        <input type="number" value="${ap.txPower}" onchange="updateAP(${ap.id}, 'txPower', this.value)">
-                    </div>
-                    <div class="form-group" style="flex: 1;">
-                        <label>Gain (dBi)</label>
-                        <input type="number" value="${ap.apGain}" onchange="updateAP(${ap.id}, 'apGain', this.value)">
-                    </div>
-                    <div class="form-group" style="flex: 1;">
-                        <label>H AGL (m)</label>
-                        <input type="number" value="${ap.height}" onchange="updateAP(${ap.id}, 'height', this.value)">
-                    </div>
-                </div>
-
-                <div class="sector-box">
+                <div style="display: ${ap.collapsed ? 'none' : 'block'};">
                     <div style="display: flex; gap: 5px;">
                         <div class="form-group" style="flex: 1;">
-                            <label>Sectors</label>
-                            <select onchange="updateAP(${ap.id}, 'numSectors', this.value)">
-                                <option value="1" ${ap.numSectors == 1 ? 'selected' : ''}>1 (Omni/Dir)</option>
-                                <option value="2" ${ap.numSectors == 2 ? 'selected' : ''}>2 (180°)</option>
-                                <option value="3" ${ap.numSectors == 3 ? 'selected' : ''}>3 (120°)</option>
-                                <option value="4" ${ap.numSectors == 4 ? 'selected' : ''}>4 (90°)</option>
-                                <option value="6" ${ap.numSectors == 6 ? 'selected' : ''}>6 (60°)</option>
-                            </select>
+                            <label>Tx (dBm)</label>
+                            <input type="number" value="${ap.txPower}" onchange="updateAP(${ap.id}, 'txPower', this.value)">
                         </div>
                         <div class="form-group" style="flex: 1;">
-                            <label>Base Azimuth</label>
-                            <input type="number" value="${ap.baseAzimuth}" onchange="updateAP(${ap.id}, 'baseAzimuth', this.value)">
+                            <label>Gain (dBi)</label>
+                            <input type="number" value="${ap.apGain}" onchange="updateAP(${ap.id}, 'apGain', this.value)">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>H AGL (m)</label>
+                            <input type="number" value="${ap.height}" onchange="updateAP(${ap.id}, 'height', this.value)">
                         </div>
                     </div>
-                    
-                    <label style="margin-top: 5px;">Channel Assignments (Every ${ap.beamwidth}°)</label>
-                    <div class="channel-grid">
-                        ${channelsHtml}
+
+                    <div class="sector-box">
+                        <div style="display: flex; gap: 5px;">
+                            <div class="form-group" style="flex: 1;">
+                                <label>Num Sectors</label>
+                                <input type="number" value="${ap.numSectors}" min="1" max="12" onchange="updateAP(${ap.id}, 'numSectors', this.value)">
+                            </div>
+                            <div class="form-group" style="flex: 1;">
+                                <label>Sector BW (°)</label>
+                                <input type="number" value="${ap.sectorBeamwidth}" min="10" max="360" onchange="updateAP(${ap.id}, 'sectorBeamwidth', this.value)">
+                            </div>
+                            <div class="form-group" style="flex: 1;">
+                                <label>Array Azimuth</label>
+                                <input type="number" value="${ap.baseAzimuth}" onchange="updateAP(${ap.id}, 'baseAzimuth', this.value)">
+                            </div>
+                        </div>
+                        
+                        <label style="margin-top: 5px;">Channel Assignments</label>
+                        <div class="channel-grid">
+                            ${channelsHtml}
+                        </div>
                     </div>
                 </div>
             `;
@@ -272,7 +305,6 @@
         });
     }
 
-    // 3. Update State when UI changes
     window.updateAP = function(id, field, value, sectorIndex = null) {
         let ap = aps.find(a => a.id === id);
         if(!ap) return;
@@ -282,6 +314,7 @@
         if (field === 'apGain') ap.apGain = parseFloat(value);
         if (field === 'height') ap.height = parseFloat(value);
         if (field === 'baseAzimuth') ap.baseAzimuth = parseFloat(value);
+        if (field === 'sectorBeamwidth') ap.sectorBeamwidth = parseFloat(value);
         
         if (field === 'channel' && sectorIndex !== null) {
             ap.channels[sectorIndex] = parseInt(value);
@@ -290,10 +323,7 @@
         if (field === 'numSectors') {
             let num = parseInt(value);
             ap.numSectors = num;
-            ap.beamwidth = num === 1 ? 360 : 360 / num; // Distribute sectors evenly
             
-            // Smart Channel Auto-Fill: Reuse every 2 sectors for dense arrays (ABAB)
-            // Or reuse every 3 for 120 deg (ABC)
             ap.channels = [];
             let reuseFactor = (num === 3) ? 3 : 2; 
             for(let i = 0; i < num; i++) {
@@ -301,23 +331,27 @@
             }
         }
         
-        // Update Marker popup
-        if(apMarkers[id]) {
-            apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`);
-        }
-
-        renderAPList(); // Re-render to reflect calculated beamwidths and new channel grids
+        if(apMarkers[id]) { apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`); }
+        renderAPList();
     }
 
-    // 4. Delete AP
     window.deleteAP = function(id) {
         aps = aps.filter(a => a.id !== id);
+        
+        // Remove Marker
         if (apMarkers[id]) {
             map.removeLayer(apMarkers[id]);
             delete apMarkers[id];
         }
+        
+        // Remove Coverage & Boundaries uniquely associated with this AP
+        if (apCoverageLayers[id]) {
+            apCoverageLayers[id].forEach(layer => map.removeLayer(layer));
+            delete apCoverageLayers[id];
+        }
+        
         renderAPList();
-        logMsg(`Deleted Base Station.`);
+        logMsg(`Deleted Base Station ID ${id}.`, 'warn');
     }
 
     function clearMap() {
@@ -326,11 +360,13 @@
         for (let id in apMarkers) { map.removeLayer(apMarkers[id]); }
         apMarkers = {};
         
-        coverageLayers.forEach(layer => map.removeLayer(layer));
-        coverageLayers = [];
+        for (let id in apCoverageLayers) {
+            apCoverageLayers[id].forEach(layer => map.removeLayer(layer));
+        }
+        apCoverageLayers = {};
         
         renderAPList();
-        logMsg("All Base Stations cleared.", "warn");
+        logMsg("All Base Stations cleared.", "error");
     }
 
     // --- GIS & RF CALCULATOR ---
@@ -353,7 +389,6 @@
         return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    // Calculate dynamic link budget bounds for a specific AP
     function calculateMaxRadii(ap) {
         const freq = parseFloat(document.getElementById('freqSelect').value);
         const bw = parseFloat(document.getElementById('channelBw').value);
@@ -393,38 +428,54 @@
         return results;
     }
 
-    // --- THE MASTER RADIAL SWEEP ENGINE ---
+    // --- MASTER RADIAL SWEEP ENGINE ---
     async function calculateCoverage() {
         if (aps.length === 0) return;
         const btn = document.getElementById('btnCoverage');
         btn.disabled = true;
         btn.innerText = "Processing Terrain Sweep...";
         
-        coverageLayers.forEach(layer => map.removeLayer(layer));
-        coverageLayers = [];
-
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
         const K_FACTOR = 1.333;
 
-        // Loop through every AP placed on the map
+        // Process every AP
         for (let apIndex = 0; apIndex < aps.length; apIndex++) {
             let activeAP = aps[apIndex];
-            logMsg(`Processing ${activeAP.name} (${activeAP.numSectors} Sectors)...`);
+            logMsg(`Processing ${activeAP.name}...`);
+
+            // Clear previous coverage for this specific AP
+            if(apCoverageLayers[activeAP.id]) {
+                apCoverageLayers[activeAP.id].forEach(layer => map.removeLayer(layer));
+            }
+            apCoverageLayers[activeAP.id] = [];
 
             const radiiTiers = calculateMaxRadii(activeAP);
-            const maxRadiusKm = radiiTiers[0].radiusKm; // Bound by BPSK
+            const maxRadiusKm = radiiTiers[0].radiusKm; 
             
-            // Loop through every Sector on this specific AP
+            // Calculate the total spread of the Array, centered on Base Azimuth
+            let totalSpread = activeAP.numSectors * activeAP.sectorBeamwidth;
+            let arrayStartAngle = activeAP.baseAzimuth - (totalSpread / 2);
+            
             for(let s = 0; s < activeAP.numSectors; s++) {
-                // Calculate geometric bounds of this specific sector
-                let sectorCenterAzimuth = activeAP.baseAzimuth + (s * activeAP.beamwidth);
-                let startAngle = sectorCenterAzimuth - (activeAP.beamwidth / 2);
-                let endAngle = sectorCenterAzimuth + (activeAP.beamwidth / 2);
+                let startAngle = arrayStartAngle + (s * activeAP.sectorBeamwidth);
+                let endAngle = startAngle + activeAP.sectorBeamwidth;
+                
+                // Draw Geometric Sector Boundaries
+                if (s === 0) {
+                    // Leftmost boundary of the entire array
+                    let edgeStart = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, startAngle);
+                    let lineStart = L.polyline([[activeAP.lat, activeAP.lng], [edgeStart.lat, edgeStart.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
+                    apCoverageLayers[activeAP.id].push(lineStart);
+                }
+                // Right boundary for every sector
+                let edgeEnd = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, endAngle);
+                let lineEnd = L.polyline([[activeAP.lat, activeAP.lng], [edgeEnd.lat, edgeEnd.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
+                apCoverageLayers[activeAP.id].push(lineEnd);
                 
                 let rayPaths = [];
                 const SAMPLES_PER_RAY = 40;
                 
-                // Sweep rays every 2 degrees across the sector face
+                // Sweep rays every 2 degrees across this specific sector face
                 for (let angle = startAngle; angle <= endAngle; angle += 2) {
                     let pts = [];
                     for (let i = 0; i < SAMPLES_PER_RAY; i++) {
@@ -435,7 +486,6 @@
                     rayPaths.push(pts);
                 }
 
-                // Batch Fetch Elevation for this Sector
                 let flatCoords = rayPaths.flat();
                 let elevations = Array(flatCoords.length).fill(0); 
                 
@@ -453,10 +503,10 @@
                                 elevations[i+j] = data.elevation[j];
                             }
                         }
-                    } catch(e) { console.warn("Elevation fetch failed for chunk."); }
+                    } catch(e) { console.warn("Elevation fetch failed."); }
                 }
 
-                // Execute Geometric Shadow Masking
+                // Geometric Shadow Masking
                 for (let r = 0; r < rayPaths.length - 1; r++) {
                     let currentRay = rayPaths[r];
                     let nextRay = rayPaths[r+1];
@@ -489,7 +539,7 @@
                                 let poly = L.polygon([currentRay[i-1], currentRay[i], nextRay[i], nextRay[i-1]], {
                                     color: assignedColor, stroke: false, fillOpacity: 0.6
                                 }).addTo(map);
-                                coverageLayers.push(poly);
+                                apCoverageLayers[activeAP.id].push(poly);
                             }
                         }
                     }
@@ -497,7 +547,7 @@
             } // End Sector Loop
         } // End AP Loop
         
-        logMsg(`Completed coverage sweep for all Base Stations.`);
+        logMsg(`Completed coverage sweep.`);
         btn.innerText = "Generate Coverage Sweep";
         btn.disabled = false;
     }
