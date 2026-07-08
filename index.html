@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PtMP Planner: mmWave Viewshed & Capacity</title>
+    <title>PtMP Planner: Multi-AP mmWave Edition</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <style>
@@ -18,6 +18,8 @@
         button:hover { background: #0056b3; }
         .btn-success { background: #28a745; }
         .btn-success:hover { background: #218838; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
         
         #logBox { height: 150px; min-height: 150px; flex-shrink: 0; background: #1e1e1e; padding: 10px; font-family: monospace; font-size: 11px; overflow-y: auto; border-top: 2px solid #333; box-sizing: border-box; }
         .log-msg { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
@@ -31,7 +33,7 @@
 
 <div id="sidebar">
     <div id="sidebar-scroll">
-        <h2>1. Environmental & Link Specs</h2>
+        <h2>1. Global Network Specs</h2>
         <div style="display: flex; gap: 5px;">
             <div class="form-group" style="flex: 1;">
                 <label>Frequency (GHz)</label>
@@ -64,18 +66,6 @@
                 <option value="99.999">99.999% (~5 mins down/yr)</option>
             </select>
         </div>
-        
-        <div style="display: flex; gap: 5px;">
-            <div class="form-group" style="flex: 1;">
-                <label>AP Tx Power (dBm)</label>
-                <input type="number" id="apTx" value="23">
-            </div>
-            <div class="form-group" style="flex: 1;">
-                <label>AP Gain (dBi)</label>
-                <input type="number" id="apGain" value="20">
-            </div>
-        </div>
-
         <div style="display: flex; gap: 5px;">
             <div class="form-group" style="flex: 1;">
                 <label>CPE Gain (dBi)</label>
@@ -86,15 +76,25 @@
                 <input type="number" id="cpeNf" value="7.0" step="0.5">
             </div>
         </div>
-
-        <h2>2. Sector Geometry</h2>
-        <div class="form-group">
-            <label>AP Height AGL (m)</label>
-            <input type="number" id="apHeight" value="30">
-        </div>
         <div class="form-group">
             <label>Target CPE Height AGL (m)</label>
             <input type="number" id="cpeHeight" value="8">
+        </div>
+
+        <h2>2. Sector Geometry (Set before clicking)</h2>
+        <div style="display: flex; gap: 5px;">
+            <div class="form-group" style="flex: 1;">
+                <label>AP Tx Power (dBm)</label>
+                <input type="number" id="apTx" value="23">
+            </div>
+            <div class="form-group" style="flex: 1;">
+                <label>AP Gain (dBi)</label>
+                <input type="number" id="apGain" value="20">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>AP Height AGL (m)</label>
+            <input type="number" id="apHeight" value="30">
         </div>
         <div style="display: flex; gap: 5px;">
             <div class="form-group" style="flex: 1;">
@@ -108,12 +108,15 @@
         </div>
 
         <hr>
-        <div id="status">Click map to drop an AP sector.</div>
-        <button id="btnCoverage" class="btn-success" onclick="calculateCoverage()" disabled>Generate Viewshed Coverage</button>
+        <div id="status">Click map to drop APs/Sectors.</div>
+        <div style="display: flex; gap: 5px;">
+            <button id="btnCoverage" class="btn-success" onclick="calculateCoverage()" disabled style="flex: 2;">Generate Coverage</button>
+            <button id="btnClear" class="btn-danger" onclick="clearMap()" style="flex: 1;">Clear Map</button>
+        </div>
     </div>
     
     <div id="logBox">
-        <div class="log-msg" style="color: #4caf50;">[System] PtMP Viewshed Engine Ready.</div>
+        <div class="log-msg" style="color: #4caf50;">[System] Multi-AP Viewshed Engine Ready.</div>
     </div>
 </div>
 
@@ -129,7 +132,6 @@
     setTimeout(() => { map.invalidateSize(); }, 500);
 
     // --- WI-FI 7 FULL MCS TABLE (0 to 11) ---
-    // Base capacities reflect standard 80MHz channel. Scaled dynamically based on UI selection.
     const MCS_TABLE = [
         {mcs: 0,  mod: "BPSK",     snr: 2,  baseCap: 34.03,  color: '#ff0000'},
         {mcs: 1,  mod: "QPSK",     snr: 5,  baseCap: 68.06,  color: '#ff4500'},
@@ -145,12 +147,11 @@
         {mcs: 11, mod: "1024-QAM", snr: 33, baseCap: 567.13, color: '#0000ff'}
     ];
 
-    let currentAP = null;
+    let aps = []; // Array to hold multiple APs
     let coverageLayers = [];
 
     // --- DYNAMIC LEGEND & CAPACITY CALCULATOR ---
     function getCapacityForBw(baseCap80, currentBw) {
-        // Linearly scale capacity based on BW ratio
         return (baseCap80 * (currentBw / 80)).toFixed(1);
     }
 
@@ -169,7 +170,6 @@
         });
     }
     
-    // Initialize Legend
     updateLegend();
 
     function logMsg(msg, type='info') {
@@ -181,16 +181,42 @@
         logBox.scrollTop = logBox.scrollHeight;
     }
 
-    // Drop AP on Map Click
+    // --- MULTI-AP PLACEMENT LOGIC ---
     map.on('click', function(e) {
-        if (currentAP) map.removeLayer(currentAP);
-        currentAP = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
-        document.getElementById('btnCoverage').disabled = false;
-        logMsg(`AP Placed at ${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`);
+        // Read the current settings in the UI at the exact moment of the click
+        const az = parseFloat(document.getElementById('azimuth').value);
+        const bw = parseFloat(document.getElementById('beamwidth').value);
+        const h = parseFloat(document.getElementById('apHeight').value);
+        const tx = parseFloat(document.getElementById('apTx').value);
+        const gain = parseFloat(document.getElementById('apGain').value);
+
+        let apMarker = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
         
+        // Save the snapshot parameters directly into the marker object
+        apMarker.settings = {
+            azimuth: az,
+            beamwidth: bw,
+            height: h,
+            txPower: tx,
+            apGain: gain
+        };
+        
+        apMarker.bindPopup(`<b>Sector ${aps.length + 1}</b><br>Azimuth: ${az}°<br>BW: ${bw}°<br>Height: ${h}m`);
+        
+        aps.push(apMarker);
+        
+        document.getElementById('btnCoverage').disabled = false;
+        logMsg(`Sector ${aps.length} Placed. (Az: ${az}°, BW: ${bw}°, H: ${h}m)`);
+    });
+
+    function clearMap() {
+        aps.forEach(ap => map.removeLayer(ap));
+        aps = [];
         coverageLayers.forEach(layer => map.removeLayer(layer));
         coverageLayers = [];
-    });
+        document.getElementById('btnCoverage').disabled = true;
+        logMsg("Map cleared.", "warn");
+    }
 
     // --- GIS MATH HELPERS ---
     function getDestination(lat, lon, distanceKm, bearing) {
@@ -212,20 +238,21 @@
         return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    // --- STEP 1: LINK BUDGET & RAIN FADE (JS Approximation) ---
-    function calculateMaxRadii() {
+    // --- LINK BUDGET CALCULATOR (Per AP Snapshot) ---
+    function calculateMaxRadii(apSettings) {
         const freq = parseFloat(document.getElementById('freqSelect').value);
         const bw = parseFloat(document.getElementById('channelBw').value);
-        const txPower = parseFloat(document.getElementById('apTx').value);
-        const txGain = parseFloat(document.getElementById('apGain').value);
         const rxGain = parseFloat(document.getElementById('cpeGain').value);
         const nf = parseFloat(document.getElementById('cpeNf').value);
         const avail = parseFloat(document.getElementById('availSelect').value);
         
+        const txPower = apSettings.txPower;
+        const txGain = apSettings.apGain;
+        
         const bwHz = bw * 1e6; 
         const noiseFloor = -174 + (10 * Math.log10(bwHz)) + nf;
         
-        // Approximate Rain & Gas Attenuation based on ITU-R for specific frequencies
+        // Approximate Rain & Gas Attenuation
         let gamma = 0.01; 
         if (freq === 26) gamma = (avail >= 99.99) ? 6.5 : 2.5;
         if (freq === 28) gamma = (avail >= 99.99) ? 7.0 : 3.0;
@@ -238,7 +265,6 @@
             const rxThreshold = noiseFloor + tier.snr;
             let minD = 0.01, maxD = 30.0, bestD = 0.01;
             
-            // Binary search for max distance where Rx Power >= Threshold
             for (let i = 0; i < 30; i++) {
                 let midD = (minD + maxD) / 2.0;
                 let fspl = 20 * Math.log10(midD) + 20 * Math.log10(freq) + 92.45;
@@ -256,9 +282,9 @@
         return results;
     }
 
-    // --- STEP 2: RADIAL SWEEP VIEWSHED ---
+    // --- MULTI-AP RADIAL SWEEP VIEWSHED ---
     async function calculateCoverage() {
-        if (!currentAP) return;
+        if (aps.length === 0) return;
         const btn = document.getElementById('btnCoverage');
         btn.disabled = true;
         btn.innerText = "Processing Sweep...";
@@ -266,107 +292,110 @@
         coverageLayers.forEach(layer => map.removeLayer(layer));
         coverageLayers = [];
 
-        const apLat = currentAP.getLatLng().lat;
-        const apLng = currentAP.getLatLng().lng;
-        const azimuth = parseFloat(document.getElementById('azimuth').value);
-        const beamwidth = parseFloat(document.getElementById('beamwidth').value);
-        const hTower = parseFloat(document.getElementById('apHeight').value);
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
-        
-        const radiiTiers = calculateMaxRadii();
-        const maxRadiusKm = radiiTiers[0].radiusKm; // Max reach at MCS0
-        
-        logMsg(`Max Theoretical RF Range (MCS0): ${maxRadiusKm.toFixed(2)} km`);
-
-        let startAngle = azimuth - (beamwidth / 2);
-        let endAngle = azimuth + (beamwidth / 2);
-        let rayPaths = [];
-        const SAMPLES_PER_RAY = 40;
-        
-        for (let angle = startAngle; angle <= endAngle; angle += 2) {
-            let pts = [];
-            for (let i = 0; i < SAMPLES_PER_RAY; i++) {
-                let dist = (i / (SAMPLES_PER_RAY - 1)) * maxRadiusKm;
-                if(dist === 0) dist = 0.001; 
-                pts.push(getDestination(apLat, apLng, dist, angle));
-            }
-            rayPaths.push(pts);
-        }
-
-        logMsg(`Casting ${rayPaths.length} Rays... Fetching Elevation Data.`);
-
-        let flatCoords = rayPaths.flat();
-        let elevations = Array(flatCoords.length).fill(0); 
-        
-        const CHUNK_SIZE = 80;
-        for (let i = 0; i < flatCoords.length; i += CHUNK_SIZE) {
-            let chunk = flatCoords.slice(i, i + CHUNK_SIZE);
-            let lats = chunk.map(c => c.lat.toFixed(5)).join(',');
-            let lngs = chunk.map(c => c.lng.toFixed(5)).join(',');
-            
-            try {
-                let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`);
-                if (res.status === 200) {
-                    let data = await res.json();
-                    for(let j=0; j<data.elevation.length; j++) {
-                        elevations[i+j] = data.elevation[j];
-                    }
-                }
-            } catch(e) { console.warn("Elevation fetch failed for chunk."); }
-        }
-
-        logMsg("Applying shadow detection geometry...");
-
         const K_FACTOR = 1.333;
 
-        for (let r = 0; r < rayPaths.length - 1; r++) {
-            let currentRay = rayPaths[r];
-            let nextRay = rayPaths[r+1];
+        // Sequentially process every AP dropped on the map
+        for (let apIndex = 0; apIndex < aps.length; apIndex++) {
+            let activeAP = aps[apIndex];
+            let apLat = activeAP.getLatLng().lat;
+            let apLng = activeAP.getLatLng().lng;
             
-            let thetaMax = -90; 
-            let baseElevation = elevations[r * SAMPLES_PER_RAY]; 
+            // Extract the saved snapshot data for THIS specific AP
+            let azimuth = activeAP.settings.azimuth;
+            let beamwidth = activeAP.settings.beamwidth;
+            let hTower = activeAP.settings.height;
             
-            for (let i = 1; i < SAMPLES_PER_RAY; i++) {
-                let distKm = getDistance(apLat, apLng, currentRay[i].lat, currentRay[i].lng);
-                let currentElev = elevations[r * SAMPLES_PER_RAY + i];
-                
-                let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
-                let dropH = (currentElev + earthBulge) - (baseElevation + hTower);
-                let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
-                
-                let beamElevAtDist = (baseElevation + hTower) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
-                let cpeClearsShadow = (currentElev + hCpe) >= beamElevAtDist;
+            logMsg(`Processing Sector ${apIndex + 1}/${aps.length}...`);
 
-                if (thetaCurrent > thetaMax) {
-                    thetaMax = thetaCurrent; 
+            const radiiTiers = calculateMaxRadii(activeAP.settings);
+            const maxRadiusKm = radiiTiers[0].radiusKm; 
+            
+            let startAngle = azimuth - (beamwidth / 2);
+            let endAngle = azimuth + (beamwidth / 2);
+            let rayPaths = [];
+            const SAMPLES_PER_RAY = 40;
+            
+            for (let angle = startAngle; angle <= endAngle; angle += 2) {
+                let pts = [];
+                for (let i = 0; i < SAMPLES_PER_RAY; i++) {
+                    let dist = (i / (SAMPLES_PER_RAY - 1)) * maxRadiusKm;
+                    if(dist === 0) dist = 0.001; 
+                    pts.push(getDestination(apLat, apLng, dist, angle));
                 }
+                rayPaths.push(pts);
+            }
 
-                if (cpeClearsShadow) {
-                    let assignedColor = null;
-                    for (let tier of [...radiiTiers].reverse()) { 
-                        if (distKm <= tier.radiusKm) {
-                            assignedColor = tier.color;
-                            break;
+            let flatCoords = rayPaths.flat();
+            let elevations = Array(flatCoords.length).fill(0); 
+            
+            const CHUNK_SIZE = 80;
+            for (let i = 0; i < flatCoords.length; i += CHUNK_SIZE) {
+                let chunk = flatCoords.slice(i, i + CHUNK_SIZE);
+                let lats = chunk.map(c => c.lat.toFixed(5)).join(',');
+                let lngs = chunk.map(c => c.lng.toFixed(5)).join(',');
+                
+                try {
+                    let res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`);
+                    if (res.status === 200) {
+                        let data = await res.json();
+                        for(let j=0; j<data.elevation.length; j++) {
+                            elevations[i+j] = data.elevation[j];
                         }
                     }
+                } catch(e) { console.warn("Elevation fetch failed for chunk."); }
+            }
+
+            // Apply Shadow Algorithm for this specific AP
+            for (let r = 0; r < rayPaths.length - 1; r++) {
+                let currentRay = rayPaths[r];
+                let nextRay = rayPaths[r+1];
+                
+                let thetaMax = -90; 
+                let baseElevation = elevations[r * SAMPLES_PER_RAY]; 
+                
+                for (let i = 1; i < SAMPLES_PER_RAY; i++) {
+                    let distKm = getDistance(apLat, apLng, currentRay[i].lat, currentRay[i].lng);
+                    let currentElev = elevations[r * SAMPLES_PER_RAY + i];
                     
-                    if (assignedColor) {
-                        let p1 = currentRay[i-1];
-                        let p2 = currentRay[i];
-                        let p3 = nextRay[i];
-                        let p4 = nextRay[i-1];
+                    let earthBulge = (distKm * distKm) / (12.75 * K_FACTOR);
+                    let dropH = (currentElev + earthBulge) - (baseElevation + hTower);
+                    let thetaCurrent = Math.atan2(dropH, distKm * 1000) * (180 / Math.PI);
+                    
+                    let beamElevAtDist = (baseElevation + hTower) + (Math.tan(thetaMax * Math.PI / 180) * distKm * 1000) - earthBulge;
+                    let cpeClearsShadow = (currentElev + hCpe) >= beamElevAtDist;
+
+                    if (thetaCurrent > thetaMax) {
+                        thetaMax = thetaCurrent; 
+                    }
+
+                    if (cpeClearsShadow) {
+                        let assignedColor = null;
+                        for (let tier of [...radiiTiers].reverse()) { 
+                            if (distKm <= tier.radiusKm) {
+                                assignedColor = tier.color;
+                                break;
+                            }
+                        }
                         
-                        let poly = L.polygon([p1, p2, p3, p4], {
-                            color: assignedColor, stroke: false, fillOpacity: 0.6
-                        }).addTo(map);
-                        coverageLayers.push(poly);
+                        if (assignedColor) {
+                            let p1 = currentRay[i-1];
+                            let p2 = currentRay[i];
+                            let p3 = nextRay[i];
+                            let p4 = nextRay[i-1];
+                            
+                            let poly = L.polygon([p1, p2, p3, p4], {
+                                color: assignedColor, stroke: false, fillOpacity: 0.6
+                            }).addTo(map);
+                            coverageLayers.push(poly);
+                        }
                     }
                 }
             }
-        }
+        } // End AP Loop
         
-        logMsg("Coverage generation complete.");
-        btn.innerText = "Generate Viewshed Coverage";
+        logMsg(`Completed coverage sweep for ${aps.length} sectors.`);
+        btn.innerText = "Generate Coverage";
         btn.disabled = false;
     }
 </script>
