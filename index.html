@@ -504,8 +504,11 @@
                 tu.assignedHalf = link.halfIdx;
                 
                 let radiiData = calculateMaxRadii(link.apRef);
-                let mcsTier = radiiData.find(r => link.dist <= r.radiusKm) || radiiData[0];
+                // ** BUG FIX: Reverse the array to find the highest MCS that meets the distance requirement! **
+                let mcsTier = [...radiiData].reverse().find(r => link.dist <= r.radiusKm) || radiiData[0];
+                
                 tu.mcs = mcsTier.mcs;
+                tu.mod = mcsTier.mod;
                 tu.peakCap = mcsTier.baseCap * 2; // 2 Spatial Streams per half-beam
                 
                 let groupKey = `${link.apId}_${link.sIdx}_${link.halfIdx}`;
@@ -541,6 +544,7 @@
                             <b>Target:</b> Sector ${member.assignedSector + 1} (${halfName} Beam)<br>
                             <b>MU-MIMO Group:</b> ${members.length} Users<br>
                             <b>Distance:</b> ${getDistance(aps.find(a=>a.id === member.assignedAP).lat, aps.find(a=>a.id === member.assignedAP).lng, member.lat, member.lng).toFixed(2)} km<br><br>
+                            <b>Modulation:</b> MCS ${member.mcs} (${member.mod})<br>
                             <span style="color: #007bff; font-weight: bold;">Peak Capacity:</span> ${member.peakCap.toFixed(1)} Mbps<br>
                             <span style="color: #28a745; font-weight: bold;">Avg Capacity:</span> ${member.avgCap.toFixed(1)} Mbps
                         </div>
