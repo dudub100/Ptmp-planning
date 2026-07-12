@@ -504,7 +504,7 @@
                 tu.assignedHalf = link.halfIdx;
                 
                 let radiiData = calculateMaxRadii(link.apRef);
-                // ** BUG FIX: Reverse the array to find the highest MCS that meets the distance requirement! **
+                // Reverse the array to find the highest MCS that meets the distance requirement!
                 let mcsTier = [...radiiData].reverse().find(r => link.dist <= r.radiusKm) || radiiData[0];
                 
                 tu.mcs = mcsTier.mcs;
@@ -530,11 +530,10 @@
         // 4. Calculate Airtime Fairness (Per Half-Beam)
         for (let key in halfMembers) {
             let members = halfMembers[key];
-            let sumInverseRates = members.reduce((sum, member) => sum + (1 / member.peakCap), 0);
             
             members.forEach(member => {
-                let fairShare = (1 / members.length) / sumInverseRates;
-                member.avgCap = fairShare; 
+                // True Airtime Fairness: Each user gets an equal fraction of the time (1/N)
+                member.avgCap = member.peakCap / members.length; 
                 
                 if(tuMarkers[member.id]) {
                     let halfName = member.assignedHalf === 0 ? "Left" : "Right";
