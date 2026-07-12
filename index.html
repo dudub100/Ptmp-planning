@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PtMP Planner: Smart Assignment & LoS Controls</title>
+    <title>PtMP Planner: MU-MIMO & Airtime Fairness</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <style>
@@ -155,7 +155,7 @@
     </div>
     
     <div id="logBox">
-        <div class="log-msg" style="color: #4caf50;">[System] Engine Ready. Mode: Deploy AP.</div>
+        <div class="log-msg" style="color: #4caf50;">[System] MU-MIMO Engine Ready. Mode: Deploy AP.</div>
     </div>
 </div>
 
@@ -169,7 +169,6 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
     setTimeout(() => { map.invalidateSize(); }, 500);
 
-    // --- FULL WI-FI 7 MCS TABLE (0 to 11) ---
     const MCS_TABLE = [
         {mcs: 0,  mod: "BPSK 1/2",     snr: 2,  baseCap: 34.03,  color: '#ff0000'},
         {mcs: 1,  mod: "QPSK 1/2",     snr: 5,  baseCap: 68.06,  color: '#ff4500'},
@@ -186,18 +185,15 @@
     ];
 
     let currentMode = 'AP';
-    
-    // State
     let aps = []; let apCounter = 1;
     let apMarkers = {}; let apCoverageLayers = {};
-    
     let tus = []; let tuCounter = 1;
     let tuMarkers = {}; let assignmentLines = [];
 
     function updateLegend() {
         const bw = parseFloat(document.getElementById('channelBw').value);
         const legendBox = document.getElementById('capLegend');
-        legendBox.innerHTML = '<div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones</div>';
+        legendBox.innerHTML = '<div style="font-weight: bold; margin-bottom: 8px;">Capacity Zones (1 Stream)</div>';
         [...MCS_TABLE].reverse().forEach(tier => {
             const currentCap = (tier.baseCap * (bw / 80)).toFixed(1);
             legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} (${tier.mod}) - <b>${currentCap} Mbps</b></div>`;
@@ -213,43 +209,29 @@
     }
 
     // --- API FALLBACK ENGINE ---
-    // Try Open-Elevation -> Open-Meteo -> OpenTopoData
     async function fetchElevation(latsArray, lngsArray) {
-        let latsComma = latsArray.join(',');
-        let lngsComma = lngsArray.join(',');
+        let latsComma = latsArray.join(','); let lngsComma = lngsArray.join(',');
         let locStringPipe = latsArray.map((lat, i) => `${lat},${lngsArray[i]}`).join('|');
 
-        // Helper to implement strict timeout
         const fetchWithTimeout = async (url, ms = 4000) => {
             const controller = new AbortController();
             const id = setTimeout(() => controller.abort(), ms);
             const response = await fetch(url, { signal: controller.signal });
-            clearTimeout(id);
-            return response;
+            clearTimeout(id); return response;
         };
 
-        // 1. Open-Elevation (Requested Primary)
         try {
-            logMsg("Attempting Open-Elevation API...", "info");
             let res = await fetchWithTimeout(`https://api.open-elevation.com/api/v1/lookup?locations=${locStringPipe}`, 4000);
             if(res.ok) { let data = await res.json(); return data.results.map(r => r.elevation); }
-        } catch(e) { logMsg("Open-Elevation failed or timed out.", "warn"); }
-
-        // 2. Open-Meteo
+        } catch(e) {}
         try {
-            logMsg("Attempting Open-Meteo API...", "info");
             let res = await fetchWithTimeout(`https://api.open-meteo.com/v1/elevation?latitude=${latsComma}&longitude=${lngsComma}`, 4000);
             if(res.ok) { let data = await res.json(); return data.elevation; }
-        } catch(e) { logMsg("Open-Meteo failed or timed out.", "warn"); }
-
-        // 3. OpenTopoData
+        } catch(e) {}
         try {
-            logMsg("Attempting OpenTopoData API...", "info");
             let res = await fetchWithTimeout(`https://api.opentopodata.org/v1/srtm90m?locations=${locStringPipe}`, 4000);
             if(res.ok) { let data = await res.json(); return data.results.map(r => r.elevation); }
-        } catch(e) { logMsg("OpenTopoData failed. Returning 0m elevation.", "error"); }
-
-        // Failsafe
+        } catch(e) {}
         return Array(latsArray.length).fill(0);
     }
 
@@ -284,9 +266,8 @@
         for(let i = 0; i < newAP.numSectors; i++) { newAP.channels.push((i % reuseFactor) + 1); }
         
         aps.push(newAP); apCoverageLayers[newAP.id] = []; 
-        
         let marker = L.marker([newAP.lat, newAP.lng]).addTo(map);
-        marker.bindPopup(`<b>${newAP.name}</b><br>${newAP.numSectors} Sectors`);
+        marker.bindPopup(`<b>${newAP.name}</b><br>${newAP.numSectors} Sectors<br>MU-MIMO Enabled`);
         apMarkers[newAP.id] = marker;
         
         apCounter++; renderAPList();
@@ -295,25 +276,21 @@
     }
 
     function deployTU(lat, lng) {
-        const newTU = { id: tuCounter, lat: lat, lng: lng, assignedSector: null, assignedAP: null };
+        const newTU = { id: tuCounter, lat: lat, lng: lng, assignedSector: null, assignedHalf: null, assignedAP: null };
         tus.push(newTU);
-        
         let marker = L.circleMarker([lat, lng], {color: '#333', fillColor: '#fff', fillOpacity: 1, radius: 5, weight: 2}).addTo(map);
         marker.bindPopup(`<b>TU ${tuCounter}</b><br>Unassigned`);
         tuMarkers[newTU.id] = marker;
-        
         tuCounter++;
     }
 
     window.bulkImportTUs = function() {
         const text = document.getElementById('bulkTuInput').value;
-        const lines = text.split('\n');
         let count = 0;
-        lines.forEach(line => {
+        text.split('\n').forEach(line => {
             const parts = line.split(',');
             if(parts.length >= 2) {
-                const lat = parseFloat(parts[0].trim());
-                const lng = parseFloat(parts[1].trim());
+                const lat = parseFloat(parts[0].trim()); const lng = parseFloat(parts[1].trim());
                 if(!isNaN(lat) && !isNaN(lng)) { deployTU(lat, lng); count++; }
             }
         });
@@ -328,13 +305,10 @@
     }
 
     function renderAPList() {
-        const container = document.getElementById('apContainer');
-        container.innerHTML = "";
+        const container = document.getElementById('apContainer'); container.innerHTML = "";
         aps.forEach((ap) => {
             let channelsHtml = '';
-            ap.channels.forEach((ch, sIdx) => {
-                channelsHtml += `<div class="form-group"><label>S${sIdx + 1}</label><input type="number" value="${ch}" onchange="updateAP(${ap.id}, 'channel', this.value, ${sIdx})"></div>`;
-            });
+            ap.channels.forEach((ch, sIdx) => { channelsHtml += `<div class="form-group"><label>S${sIdx + 1}</label><input type="number" value="${ch}" onchange="updateAP(${ap.id}, 'channel', this.value, ${sIdx})"></div>`; });
             const card = document.createElement('div'); card.className = 'ap-card';
             card.innerHTML = `
                 <div class="ap-card-header">
@@ -362,15 +336,11 @@
     }
 
     window.updateAP = function(id, field, value, sIdx = null) {
-        let ap = aps.find(a => a.id === id);
-        if(!ap) return;
+        let ap = aps.find(a => a.id === id); if(!ap) return;
         if (field === 'name') ap.name = value;
         if (field === 'txPower' || field === 'apGain' || field === 'height' || field === 'baseAzimuth' || field === 'sectorBeamwidth' || field === 'numSectors') ap[field] = parseFloat(value);
         if (field === 'channel' && sIdx !== null) ap.channels[sIdx] = parseInt(value);
-        if (field === 'numSectors') {
-            ap.channels = []; let r = (ap.numSectors === 3) ? 3 : 2; 
-            for(let i=0; i<ap.numSectors; i++) ap.channels.push((i%r)+1);
-        }
+        if (field === 'numSectors') { ap.channels = []; let r = (ap.numSectors === 3) ? 3 : 2; for(let i=0; i<ap.numSectors; i++) ap.channels.push((i%r)+1); }
         if(apMarkers[id]) apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`);
         renderAPList();
     }
@@ -386,11 +356,9 @@
         aps = []; apCounter = 1;
         for (let id in apMarkers) map.removeLayer(apMarkers[id]); apMarkers = {};
         for (let id in apCoverageLayers) apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); apCoverageLayers = {};
-        
         tus = []; tuCounter = 1;
         for (let id in tuMarkers) map.removeLayer(tuMarkers[id]); tuMarkers = {};
         assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
-        
         renderAPList(); logMsg("Map Cleared.", "warn");
     }
 
@@ -438,14 +406,14 @@
                 let fspl = 20 * Math.log10(midD) + 20 * Math.log10(freq) + 92.45;
                 if (ap.txPower + ap.apGain + rxGain - (fspl + (gamma * midD)) >= rxThreshold) { bestD = midD; minD = midD; } else { maxD = midD; }
             }
-            results.push({ mcs: tier.mcs, mod: tier.mod, color: tier.color, radiusKm: bestD });
+            results.push({ mcs: tier.mcs, mod: tier.mod, color: tier.color, radiusKm: bestD, baseCap: tier.baseCap * (bw/80) });
         });
         return results;
     }
 
-    // --- ASSIGNMENT ENGINE ---
+    // --- ASSIGNMENT ENGINE with MU-MIMO ---
     async function checkLoSPointToPoint(lat1, lon1, h1, lat2, lon2, h2) {
-        if(document.getElementById('skipLos').checked) return true; // USER BYPASS
+        if(document.getElementById('skipLos').checked) return true; 
 
         const distKm = getDistance(lat1, lon1, lat2, lon2);
         let SAMPLES = Math.floor(distKm * 1000 / 90); if (SAMPLES < 10) SAMPLES = 10;
@@ -465,36 +433,34 @@
             let expectedLine = (elevations[0] + h1) + ((elevations[SAMPLES-1] + h2) - (elevations[0] + h1)) * (i / (SAMPLES - 1));
             let d1 = distKm * (i / (SAMPLES - 1)); let d2 = distKm - d1;
             let earthBulge = (d1 * d2) / (12.75 * K_FACTOR);
-            if (expectedLine <= (currentElev + earthBulge)) return false; // Blocked
+            if (expectedLine <= (currentElev + earthBulge)) return false; 
         }
-        return true; // Clear
+        return true; 
     }
 
     window.assignTUs = async function() {
         if (aps.length === 0 || tus.length === 0) return logMsg("Need at least 1 AP and 1 TU.", "warn");
         
-        const btn = document.getElementById('btnAssign'); btn.disabled = true; btn.innerText = "Analyzing Constraints & LoS...";
-        
+        const btn = document.getElementById('btnAssign'); btn.disabled = true; btn.innerText = "Analyzing MU-MIMO LoS...";
         assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
         
         const maxTuSec = parseInt(document.getElementById('maxTuSector').value);
         const maxTuAp = parseInt(document.getElementById('maxTuAp').value);
         const hCpe = parseFloat(document.getElementById('cpeHeight').value);
 
-        // Reset TU visual state
         tus.forEach(tu => {
-            tu.assignedSector = null; tu.assignedAP = null;
+            tu.assignedSector = null; tu.assignedHalf = null; tu.assignedAP = null;
             if(tuMarkers[tu.id]) { tuMarkers[tu.id].setStyle({color: '#333', fillColor: '#fff'}); tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Unassigned`); }
         });
 
         let potentialLinks = [];
 
-        // 1. Gather all physically possible links
+        // 1. Gather all physically possible links + Calculate Sub-Beam (Left/Right)
         for (let t = 0; t < tus.length; t++) {
             let tu = tus[t];
             for (let a = 0; a < aps.length; a++) {
                 let ap = aps[a];
-                const maxRadiusKm = calculateMaxRadii(ap)[0].radiusKm; // BPSK limit
+                const maxRadiusKm = calculateMaxRadii(ap)[0].radiusKm; 
                 let dist = getDistance(ap.lat, ap.lng, tu.lat, tu.lng);
                 
                 if (dist > maxRadiusKm) continue;
@@ -503,16 +469,14 @@
                 let arrayStartAngle = ap.baseAzimuth - ((ap.numSectors * ap.sectorBeamwidth) / 2);
                 
                 for (let s = 0; s < ap.numSectors; s++) {
-                    let sStart = (arrayStartAngle + (s * ap.sectorBeamwidth) + 360) % 360;
-                    let sEnd = (sStart + ap.sectorBeamwidth) % 360;
+                    let sCenter = (arrayStartAngle + (s * ap.sectorBeamwidth) + (ap.sectorBeamwidth / 2)) % 360;
+                    // Calculate relative angle to sector center [-180 to 180]
+                    let diff = (bearing - sCenter + 540) % 360 - 180;
                     
-                    let inside = false;
-                    if (sStart < sEnd) { inside = (bearing >= sStart && bearing <= sEnd); } 
-                    else { inside = (bearing >= sStart || bearing <= sEnd); } 
-                    
-                    if (inside) {
+                    if (Math.abs(diff) <= ap.sectorBeamwidth / 2) {
+                        let halfIndex = diff < 0 ? 0 : 1; // 0 = Left Half, 1 = Right Half
                         let hasLoS = await checkLoSPointToPoint(ap.lat, ap.lng, ap.height, tu.lat, tu.lng, hCpe);
-                        if (hasLoS) potentialLinks.push({ tuId: tu.id, apId: ap.id, sIdx: s, dist: dist, apRef: ap });
+                        if (hasLoS) potentialLinks.push({ tuId: tu.id, apId: ap.id, sIdx: s, halfIdx: halfIndex, dist: dist, apRef: ap });
                     }
                 }
             }
@@ -523,8 +487,8 @@
 
         let apCounts = {}; let secCounts = {}; 
         aps.forEach(ap => { apCounts[ap.id] = 0; secCounts[ap.id] = {}; });
-
         let assignedCount = 0;
+        let halfMembers = {}; // Dictionary to track Airtime Fairness groups: "apId_sIdx_halfIdx"
 
         // 3. Greedy Assign
         for (let i = 0; i < potentialLinks.length; i++) {
@@ -534,10 +498,20 @@
             if (tu.assignedAP !== null) continue; 
             if (!secCounts[link.apId][link.sIdx]) secCounts[link.apId][link.sIdx] = 0;
             
-            // Apply MAC/Scheduler Constraints
             if (secCounts[link.apId][link.sIdx] < maxTuSec && apCounts[link.apId] < maxTuAp) {
                 tu.assignedAP = link.apId;
                 tu.assignedSector = link.sIdx;
+                tu.assignedHalf = link.halfIdx;
+                
+                let radiiData = calculateMaxRadii(link.apRef);
+                let mcsTier = radiiData.find(r => link.dist <= r.radiusKm) || radiiData[0];
+                tu.mcs = mcsTier.mcs;
+                tu.peakCap = mcsTier.baseCap * 2; // 2 Spatial Streams per half-beam
+                
+                let groupKey = `${link.apId}_${link.sIdx}_${link.halfIdx}`;
+                if(!halfMembers[groupKey]) halfMembers[groupKey] = [];
+                halfMembers[groupKey].push(tu);
+
                 secCounts[link.apId][link.sIdx]++;
                 apCounts[link.apId]++;
                 assignedCount++;
@@ -546,14 +520,36 @@
                 let line = L.polyline([[link.apRef.lat, link.apRef.lng], [tu.lat, tu.lng]], {color: chColor, weight: 2}).addTo(map);
                 assignmentLines.push(line);
                 
-                if(tuMarkers[tu.id]) {
-                    tuMarkers[tu.id].setStyle({color: chColor, fillColor: chColor});
-                    tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Linked to: ${link.apRef.name}<br>Sector: ${link.sIdx+1}<br>Distance: ${link.dist.toFixed(2)}km`);
-                }
+                if(tuMarkers[tu.id]) { tuMarkers[tu.id].setStyle({color: chColor, fillColor: chColor}); }
             }
         }
 
-        logMsg(`Optimization Complete. Assigned ${assignedCount}/${tus.length} TUs.`);
+        // 4. Calculate Airtime Fairness (Per Half-Beam)
+        for (let key in halfMembers) {
+            let members = halfMembers[key];
+            let sumInverseRates = members.reduce((sum, member) => sum + (1 / member.peakCap), 0);
+            
+            members.forEach(member => {
+                let fairShare = (1 / members.length) / sumInverseRates;
+                member.avgCap = fairShare; 
+                
+                if(tuMarkers[member.id]) {
+                    let halfName = member.assignedHalf === 0 ? "Left" : "Right";
+                    tuMarkers[member.id].bindPopup(`
+                        <div style="font-family: Arial; font-size: 12px; min-width: 150px;">
+                            <strong style="font-size: 14px; border-bottom: 1px solid #ccc; display: block; padding-bottom: 3px; margin-bottom: 5px;">TU ${member.id}</strong>
+                            <b>Target:</b> Sector ${member.assignedSector + 1} (${halfName} Beam)<br>
+                            <b>MU-MIMO Group:</b> ${members.length} Users<br>
+                            <b>Distance:</b> ${getDistance(aps.find(a=>a.id === member.assignedAP).lat, aps.find(a=>a.id === member.assignedAP).lng, member.lat, member.lng).toFixed(2)} km<br><br>
+                            <span style="color: #007bff; font-weight: bold;">Peak Capacity:</span> ${member.peakCap.toFixed(1)} Mbps<br>
+                            <span style="color: #28a745; font-weight: bold;">Avg Capacity:</span> ${member.avgCap.toFixed(1)} Mbps
+                        </div>
+                    `);
+                }
+            });
+        }
+
+        logMsg(`MU-MIMO Optimization Complete. Assigned ${assignedCount}/${tus.length} TUs.`);
         btn.disabled = false; btn.innerText = "2. Run Smart Assignment";
     }
 
@@ -578,6 +574,7 @@
             for(let s = 0; s < activeAP.numSectors; s++) {
                 let startAngle = arrayStartAngle + (s * activeAP.sectorBeamwidth);
                 let endAngle = startAngle + activeAP.sectorBeamwidth;
+                let centerAngle = startAngle + (activeAP.sectorBeamwidth / 2);
                 
                 // Draw Sector Borders
                 if (s === 0) {
@@ -588,26 +585,20 @@
                 let edgeEnd = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, endAngle);
                 let lineEnd = L.polyline([[activeAP.lat, activeAP.lng], [edgeEnd.lat, edgeEnd.lng]], {color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8}).addTo(map);
                 apCoverageLayers[activeAP.id].push(lineEnd);
+                
+                // Draw MU-MIMO Center Line
+                let centerEdge = getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, centerAngle);
+                let centerLine = L.polyline([[activeAP.lat, activeAP.lng], [centerEdge.lat, centerEdge.lng]], {color: '#555', weight: 1, dashArray: '2,6', opacity: 0.5}).addTo(map);
+                apCoverageLayers[activeAP.id].push(centerLine);
 
                 if(skipLos) {
-                    // FAST MODE: Draw concentric wedges
-                    let centerPts = [];
-                    // Generate points along the arc for the polygon
-                    for(let a = startAngle; a <= endAngle; a+=2) {
-                        centerPts.push(getDestination(activeAP.lat, activeAP.lng, maxRadiusKm, a));
-                    }
-                    
                     [...radiiTiers].reverse().forEach(tier => {
                         let arcPts = [[activeAP.lat, activeAP.lng]];
-                        for(let a = startAngle; a <= endAngle; a+=2) {
-                            arcPts.push(getDestination(activeAP.lat, activeAP.lng, tier.radiusKm, a));
-                        }
+                        for(let a = startAngle; a <= endAngle; a+=2) arcPts.push(getDestination(activeAP.lat, activeAP.lng, tier.radiusKm, a));
                         let poly = L.polygon(arcPts, {color: tier.color, stroke: false, fillOpacity: 0.5}).addTo(map);
                         apCoverageLayers[activeAP.id].push(poly);
                     });
-                    
                 } else {
-                    // TERRAIN MODE: Radial Sweep
                     let rayPaths = []; const SAMPLES = 40;
                     for (let angle = startAngle; angle <= endAngle; angle += 2) {
                         let pts = [];
