@@ -10,6 +10,9 @@
         #sidebar-scroll { flex-grow: 1; overflow-y: auto; padding: 15px; box-sizing: border-box; }
         #map { flex-grow: 1; height: 100%; position: relative; z-index: 1; background: #e5e3df; }
         
+        .tu-label { font-size: 10px; line-height: 1.1; font-weight: bold; background: rgba(255,255,255,0.85); padding: 2px 4px; border: 1px solid #333; border-radius: 3px; white-space: nowrap; pointer-events: none; box-shadow: 1px 1px 3px rgba(0,0,0,0.3); }
+        .cap-label { background: rgba(0,123,255,0.8); color: white; padding: 2px 5px; border-radius: 3px; font-size: 10px; font-weight: bold; white-space: nowrap; border: 1px solid white; box-shadow: 1px 1px 3px rgba(0,0,0,0.3); pointer-events: none; }
+        
         h2 { font-size: 15px; margin-top: 0; margin-bottom: 10px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
         .form-group { margin-bottom: 10px; }
         label { display: block; font-weight: bold; margin-bottom: 3px; font-size: 12px; color: #555; }
@@ -71,7 +74,8 @@
             </div>
             <div class="form-group" style="flex: 1;">
                 <label>Channel BW (MHz)</label>
-                <select id="channelBw" onchange="updateLegend()">
+                <!-- NOTE: updateAll() triggers both the legend AND the AP labels to update dynamically -->
+                <select id="channelBw" onchange="updateAll()">
                     <option value="40">40 MHz</option>
                     <option value="80" selected>80 MHz</option>
                     <option value="160">160 MHz</option>
@@ -185,10 +189,19 @@
     ];
 
     let currentMode = 'AP';
+    
+    // Core State Arrays
     let aps = []; let apCounter = 1;
-    let apMarkers = {}; let apCoverageLayers = {};
+    let apMarkers = {}; let apLabels = {}; let apCoverageLayers = {};
+    
     let tus = []; let tuCounter = 1;
-    let tuMarkers = {}; let assignmentLines = [];
+    let tuMarkers = {}; let tuLabels = {}; let assignmentLines = [];
+
+    // --- DYNAMIC UI UPDATERS ---
+    function updateAll() {
+        updateLegend();
+        refreshAPLabels();
+    }
 
     function updateLegend() {
         const bw = parseFloat(document.getElementById('channelBw').value);
@@ -199,7 +212,28 @@
             legendBox.innerHTML += `<div class="legend-item"><div class="legend-color" style="background: ${tier.color};"></div>MCS ${tier.mcs} (${tier.mod}) - <b>${currentCap} Mbps</b></div>`;
         });
     }
-    updateLegend();
+
+    function refreshAPLabels() {
+        const bw = parseFloat(document.getElementById('channelBw').value);
+        // Base Cap of MCS 11 x 4 streams total per sector = Max Sector Capacity
+        const maxCapPerSector = (MCS_TABLE[11].baseCap * 4 * (bw / 80)).toFixed(0); 
+        aps.forEach(ap => {
+            if (apLabels[ap.id]) map.removeLayer(apLabels[ap.id]);
+            apLabels[ap.id] = L.marker([ap.lat, ap.lng], {
+                icon: L.divIcon({ className: 'cap-label', html: `${ap.numSectors}x ${maxCapPerSector} Mbps`, iconAnchor: [-10, 10] })
+            }).addTo(map);
+        });
+    }
+
+    function renderTuLabel(tu) {
+        if (tuLabels[tu.id]) map.removeLayer(tuLabels[tu.id]);
+        const html = `<div class="tu-label">P: ${tu.peakCap.toFixed(0)}M<br>A: ${tu.avgCap.toFixed(0)}M</div>`;
+        tuLabels[tu.id] = L.marker([tu.lat, tu.lng], {
+            icon: L.divIcon({ html, className: 'tu-label-container', iconAnchor: [0, -10] })
+        }).addTo(map);
+    }
+
+    updateAll(); // Initial run
 
     function logMsg(msg, type='info') {
         const logBox = document.getElementById('logBox');
@@ -270,7 +304,9 @@
         marker.bindPopup(`<b>${newAP.name}</b><br>${newAP.numSectors} Sectors<br>MU-MIMO Enabled`);
         apMarkers[newAP.id] = marker;
         
-        apCounter++; renderAPList();
+        apCounter++; 
+        renderAPList();
+        refreshAPLabels();
         document.getElementById('btnCoverage').disabled = false;
         logMsg(`Deployed ${newAP.name}.`);
     }
@@ -343,11 +379,13 @@
         if (field === 'numSectors') { ap.channels = []; let r = (ap.numSectors === 3) ? 3 : 2; for(let i=0; i<ap.numSectors; i++) ap.channels.push((i%r)+1); }
         if(apMarkers[id]) apMarkers[id].bindPopup(`<b>${ap.name}</b><br>${ap.numSectors} Sectors`);
         renderAPList();
+        refreshAPLabels();
     }
 
     window.deleteAP = function(id) {
         aps = aps.filter(a => a.id !== id);
         if (apMarkers[id]) { map.removeLayer(apMarkers[id]); delete apMarkers[id]; }
+        if (apLabels[id]) { map.removeLayer(apLabels[id]); delete apLabels[id]; }
         if (apCoverageLayers[id]) { apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); delete apCoverageLayers[id]; }
         renderAPList();
     }
@@ -355,9 +393,13 @@
     window.clearMap = function() {
         aps = []; apCounter = 1;
         for (let id in apMarkers) map.removeLayer(apMarkers[id]); apMarkers = {};
+        for (let id in apLabels) map.removeLayer(apLabels[id]); apLabels = {};
         for (let id in apCoverageLayers) apCoverageLayers[id].forEach(layer => map.removeLayer(layer)); apCoverageLayers = {};
+        
         tus = []; tuCounter = 1;
         for (let id in tuMarkers) map.removeLayer(tuMarkers[id]); tuMarkers = {};
+        for (let id in tuLabels) map.removeLayer(tuLabels[id]); tuLabels = {};
+        
         assignmentLines.forEach(l => map.removeLayer(l)); assignmentLines = [];
         renderAPList(); logMsg("Map Cleared.", "warn");
     }
@@ -451,6 +493,7 @@
         tus.forEach(tu => {
             tu.assignedSector = null; tu.assignedHalf = null; tu.assignedAP = null;
             if(tuMarkers[tu.id]) { tuMarkers[tu.id].setStyle({color: '#333', fillColor: '#fff'}); tuMarkers[tu.id].bindPopup(`<b>TU ${tu.id}</b><br>Unassigned`); }
+            if(tuLabels[tu.id]) { map.removeLayer(tuLabels[tu.id]); delete tuLabels[tu.id]; }
         });
 
         let potentialLinks = [];
@@ -488,7 +531,7 @@
         let apCounts = {}; let secCounts = {}; 
         aps.forEach(ap => { apCounts[ap.id] = 0; secCounts[ap.id] = {}; });
         let assignedCount = 0;
-        let halfMembers = {}; // Dictionary to track Airtime Fairness groups: "apId_sIdx_halfIdx"
+        let halfMembers = {}; // Dictionary to track Airtime Fairness groups
 
         // 3. Greedy Assign
         for (let i = 0; i < potentialLinks.length; i++) {
@@ -527,13 +570,15 @@
             }
         }
 
-        // 4. Calculate Airtime Fairness (Per Half-Beam)
+        // 4. Calculate Airtime Fairness (Per Half-Beam) & Render persistent labels
         for (let key in halfMembers) {
             let members = halfMembers[key];
             
             members.forEach(member => {
                 // True Airtime Fairness: Each user gets an equal fraction of the time (1/N)
                 member.avgCap = member.peakCap / members.length; 
+                
+                renderTuLabel(member); // Render persistent label over the map
                 
                 if(tuMarkers[member.id]) {
                     let halfName = member.assignedHalf === 0 ? "Left" : "Right";
