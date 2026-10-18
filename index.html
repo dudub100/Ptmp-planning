@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PtMP Planner: MU-MIMO, SINR & Wi-Fi 7 Link Calculator</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+    :root { --blue:#007bff; --blue-d:#0056b3; --line:#d1d5db; --bg:#f8f9fa; --ink:#333; --muted:#666; }
+    * { box-sizing: border-box; }
+    body, html { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; height: 100%; width: 100%; overflow: hidden; color: var(--ink); }
+    body { display: flex; flex-direction: column; }
+
+    /* Top bar + tabs */
+    #topbar { height: 42px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 12px; background: #1f2933; color: #fff; z-index: 5; }
+    #topbar .brand { font-weight: bold; font-size: 14px; }
+    #topbar nav { display: flex; gap: 4px; }
+    .tab { background: transparent; color: #cbd2d9; border: 1px solid transparent; border-radius: 4px; padding: 6px 12px; font-size: 13px; font-weight: bold; cursor: pointer; width: auto; margin: 0; }
+    .tab:hover { background: #323f4b; color: #fff; }
+    .tab.active { background: var(--blue); color: #fff; }
+    #staleBadge { margin-left: auto; background: #ffc107; color: #333; font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 4px; }
+    #staleBadge[hidden] { display: none; }
+
+    main { flex: 1; min-height: 0; position: relative; }
+    .view { position: absolute; inset: 0; display: none; }
+    .view.active { display: flex; }
+
+    /* Planner */
+    #sidebar { width: 430px; min-width: 430px; height: 100%; background: var(--bg); display: flex; flex-direction: column; border-right: 1px solid #ccc; z-index: 2; box-shadow: 2px 0 5px rgba(0,0,0,0.1); }
+    #sidebar-scroll { flex-grow: 1; overflow-y: auto; padding: 12px 15px; }
+    #map { flex-grow: 1; height: 100%; position: relative; z-index: 1; background: #e5e3df; }
+
+    .tu-label { font-size: 10px; line-height: 1.1; font-weight: bold; background: rgba(255,255,255,0.85); padding: 2px 4px; border: 1px solid #333; border-radius: 3px; white-space: nowrap; pointer-events: none; box-shadow: 1px 1px 3px rgba(0,0,0,0.3); display: inline-block; }
+    .tu-label-container { background: none; border: none; }
+    .cap-label { background: rgba(0,123,255,0.85); color: white; padding: 2px 5px; border-radius: 3px; font-size: 10px; font-weight: bold; white-space: nowrap; border: 1px solid white; box-shadow: 1px 1px 3px rgba(0,0,0,0.3); pointer-events: none; display: inline-block; }
+    .cap-label-container { background: none; border: none; }
+
+    h2 { font-size: 15px; margin: 14px 0 10px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+    details.sec { background: #fff; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+    details.sec > summary { cursor: pointer; padding: 8px 10px; font-weight: bold; font-size: 13px; color: #333; list-style-position: inside; }
+    details.sec[open] > summary { border-bottom: 1px solid #e9ecef; }
+    details.sec > .sec-body { padding: 8px 10px 2px; }
+    .row { display: flex; gap: 6px; }
+    .row > .form-group { flex: 1; min-width: 0; }
+    .form-group { margin-bottom: 8px; }
+    label { display: block; font-weight: bold; margin-bottom: 3px; font-size: 11px; color: #555; }
+    label.check { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; margin-bottom: 8px; }
+    label.check input { width: 15px; height: 15px; margin: 0; flex-shrink: 0; }
+    input[type="number"], input[type="text"], select, textarea { width: 100%; padding: 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; background: #fff; }
+    input[readonly] { background: #f1f3f5; color: #555; }
+    textarea { height: 60px; resize: vertical; font-family: monospace; }
+    .hint { font-size: 11px; color: var(--muted); line-height: 1.35; margin: -2px 0 8px; }
+    .warn-note { background: #fff8e1; border: 1px solid #ffe08a; color: #6b5300; }
+    .hint.warn-note { padding: 6px 8px; border-radius: 4px; margin: 0 0 8px; }
+
+    button { width: 100%; padding: 8px; background: var(--blue); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; margin-bottom: 5px; }
+    button:hover { background: var(--blue-d); }
+    button:disabled { background: #9db9d8; cursor: not-allowed; }
+    button:focus-visible, .tab:focus-visible, .mode-btn:focus-visible, summary:focus-visible { outline: 2px solid #ffbf47; outline-offset: 1px; }
+    .btn-success { background: #28a745; } .btn-success:hover { background: #218838; }
+    .btn-warning { background: #ffc107; color: #333; } .btn-warning:hover { background: #e0a800; }
+    .btn-secondary { background: #6c757d; } .btn-secondary:hover { background: #5a6268; }
+    .btn-danger { background: #dc3545; padding: 4px 8px; font-size: 11px; width: auto; flex-shrink: 0; margin: 0; }
+    .btn-danger:hover { background: #c82333; }
+    .btn-toggle { background: #e9ecef; color: #333; width: 24px; height: 24px; padding: 0; display: flex; align-items: center; justify-content: center; margin: 0 8px 0 0; border: 1px solid #ccc; }
+    .btn-toggle:hover { background: #dde0e3; }
+    .stale-btn { box-shadow: 0 0 0 2px #ffc107; }
+
+    .ap-card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+    .ap-card-header { display: flex; align-items: center; margin-bottom: 8px; }
+    .ap-card-header input { font-weight: bold; border: none; background: transparent; font-size: 14px; flex-grow: 1; color: var(--blue); border-bottom: 1px solid transparent; margin-right: 10px; }
+    .ap-card-header input:focus { border-bottom: 1px solid var(--blue); outline: none; }
+    .sector-box { background: #f1f3f5; padding: 8px; border-radius: 4px; margin-top: 4px; border: 1px solid #e9ecef; }
+    .channel-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 5px; }
+
+    #logBox { height: 120px; min-height: 120px; flex-shrink: 0; background: #1e1e1e; padding: 10px; font-family: monospace; font-size: 11px; overflow-y: auto; border-top: 2px solid #333; }
+    .log-msg { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+
+    .legend { position: absolute; bottom: 20px; left: 20px; z-index: 999; font-size: 11px; color: #333; background: rgba(255,255,255,0.95); padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-shadow: 0 2px 5px rgba(0,0,0,0.2); max-height: 360px; overflow-y: auto; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
+    .legend-color { width: 12px; height: 12px; margin-right: 8px; border: 1px solid #777; border-radius: 2px; flex-shrink: 0; }
+
+    .mode-selector { display: flex; background: #e9ecef; border-radius: 4px; padding: 3px; margin-bottom: 10px; }
+    .mode-btn { flex: 1; padding: 6px; text-align: center; cursor: pointer; font-size: 12px; font-weight: bold; border-radius: 3px; transition: background 0.2s; }
+    .mode-btn.active { background: var(--blue); color: white; }
+
+    .pop { font-family: Arial, sans-serif; font-size: 12px; min-width: 230px; }
+    .pop strong.t { font-size: 14px; border-bottom: 1px solid #ccc; display: block; padding-bottom: 3px; margin-bottom: 5px; }
+    .pop table { border-collapse: collapse; width: 100%; }
+    .pop td { padding: 1px 4px 1px 0; vertical-align: top; }
+    .pop td:first-child { color: #555; white-space: nowrap; }
+    .pop .sub { font-weight: bold; margin-top: 6px; color: #1f2933; }
+    .pop select { margin: 4px 0; }
+    .pop .bad { color: #c82333; font-weight: bold; }
+    .pop .flag { color: #b26a00; font-weight: bold; }
+
+    /* Calculator */
+    #calcView { background: #eef1f4; }
+    #calcInputs { width: 340px; min-width: 340px; height: 100%; overflow-y: auto; background: var(--bg); border-right: 1px solid #ccc; padding: 12px 14px; }
+    #calcResults { flex: 1; min-width: 0; height: 100%; overflow-y: auto; padding: 16px 18px 40px; }
+    .calc-card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 16px; max-width: 1100px; }
+    .calc-card h3 { margin: 0 0 10px; font-size: 15px; color: #1f2933; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .calc-card h3 input { width: 80px; display: inline-block; }
+    .calc-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; max-width: 1100px; }
+    .calc-grid .calc-card { margin-bottom: 0; }
+    .table-wrap { overflow-x: auto; }
+    table.data { border-collapse: collapse; font-size: 12px; width: 100%; }
+    table.data th, table.data td { border: 1px solid #e3e6ea; padding: 4px 8px; text-align: right; white-space: nowrap; }
+    table.data th { background: #f1f3f5; position: sticky; top: 0; }
+    table.data td:first-child, table.data th:first-child { text-align: left; }
+    table.data tr.hl td { background: #e8f2ff; }
+    table.data td.zero { color: #aaa; }
+    table.budget td { border: none; border-bottom: 1px solid #f0f2f4; padding: 3px 6px; font-size: 12px; }
+    table.budget td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    table.budget tr.total td { font-weight: bold; border-top: 1px solid #ccc; }
+    #chartBox { width: 100%; position: relative; }
+    #chartBox svg { width: 100%; height: auto; display: block; }
+    #chartTip { position: absolute; pointer-events: none; background: rgba(31,41,51,0.92); color: #fff; font-size: 11px; padding: 6px 8px; border-radius: 4px; white-space: nowrap; display: none; }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin-top: 6px; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .chart-legend i { width: 18px; height: 3px; display: inline-block; }
+    .model-note { font-size: 11px; color: var(--muted); line-height: 1.4; max-width: 1100px; }
+
+    @media (max-width: 900px) {
+        #sidebar { width: 100%; min-width: 0; height: 55%; }
+        #planner.view.active { flex-direction: column-reverse; }
+        #map { height: 45%; }
+        #calcView.active { flex-direction: column; overflow-y: auto; }
+        #calcInputs { width: 100%; min-width: 0; height: auto; }
+        #calcResults { height: auto; overflow: visible; }
+        .calc-grid { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header id="topbar">
+    <div class="brand">PtMP Planner</div>
+    <nav>
+        <button class="tab active" data-view="planner" onclick="showView('planner')">Map planner</button>
+        <button class="tab" data-view="calcView" onclick="showView('calcView')">Link calculator</button>
+    </nav>
+    <div id="staleBadge" hidden>Inputs changed: re-run coverage and assignment</div>
+</header>
+
+<main>
+<!-- ===================== MAP PLANNER ===================== -->
+<section id="planner" class="view active">
+<div id="sidebar">
+    <div id="sidebar-scroll">
+
+        <details class="sec" open>
+            <summary>Radio and channel</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group"><label for="freq">Frequency (GHz)</label><input class="g" type="number" id="freq" value="26" min="1" max="52" step="0.1"></div>
+                    <div class="form-group"><label for="channelBw">Channel BW (MHz)</label><select class="g" id="channelBw"></select></div>
+                    <div class="form-group"><label for="gi">Guard interval (µs)</label>
+                        <select class="g" id="gi"><option value="0.8">0.8</option><option value="1.6" selected>1.6</option><option value="3.2">3.2</option></select></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="maxMcs">Max MCS</label><input class="g" type="number" id="maxMcs" value="11" min="0" max="13"></div>
+                    <div class="form-group"><label for="streams">Streams / half-beam</label><input class="g" type="number" id="streams" value="2" min="1" max="8"></div>
+                    <div class="form-group"><label for="macEff">MAC efficiency (%)</label><input class="g" type="number" id="macEff" value="75" min="10" max="100"></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="margin">Fade margin (dB)</label><input class="g" type="number" id="margin" value="2" step="0.5"></div>
+                    <div class="form-group"><label for="apNf">AP NF (dB, uplink)</label><input class="g" type="number" id="apNf" value="7" step="0.5"></div>
+                </div>
+            </div>
+        </details>
+
+        <details class="sec" open>
+            <summary>Propagation</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group"><label for="avail">Availability (%)</label><input class="g" type="number" id="avail" value="99.99" min="99" max="99.999" step="0.005"></div>
+                    <div class="form-group"><label for="rainZone">Rain zone</label><select class="g" id="rainZone"></select></div>
+                    <div class="form-group"><label for="rainRate">R0.01 (mm/h)</label><input class="g" type="number" id="rainRate" value="42" readonly></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="pol">Polarization</label><select class="g" id="pol"><option value="V" selected>Vertical</option><option value="H">Horizontal</option></select></div>
+                    <div class="form-group"><label for="rho">Water vapour (g/m³)</label><input class="g" type="number" id="rho" value="7.5" step="0.5" min="0"></div>
+                </div>
+                <div class="hint">Rain: ITU-R P.837 zone rate, P.838-3 specific attenuation, P.530-17 path reduction and percentage scaling. Gases: P.676 Annex 2.</div>
+            </div>
+        </details>
+
+        <details class="sec" open>
+            <summary>Terminal units (TU)</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group" style="flex:2"><label for="tuAnt">Default antenna</label><select class="g" id="tuAnt"></select></div>
+                    <div class="form-group"><label for="tuTx">Tx power (dBm)</label><input class="g" type="number" id="tuTx" value="23"></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="tuNf">NF (dB)</label><input class="g" type="number" id="tuNf" value="7" step="0.5"></div>
+                    <div class="form-group"><label for="cpeHeight">Height AGL (m)</label><input class="g" type="number" id="cpeHeight" value="8"></div>
+                </div>
+                <div class="hint">New TUs get the default antenna. You can change it per TU from its popup.</div>
+            </div>
+        </details>
+
+        <details class="sec">
+            <summary>Interference</summary>
+            <div class="sec-body">
+                <label class="check"><input class="g" type="checkbox" id="useInterf" checked> Use downlink SINR (co-channel interference)</label>
+                <div class="row">
+                    <div class="form-group"><label for="activity">Activity factor (%)</label><input class="g" type="number" id="activity" value="100" min="0" max="100"></div>
+                    <div class="form-group"><label for="apFb">AP F/B, sidelobe floor (dB)</label><input class="g" type="number" id="apFb" value="30"></div>
+                    <div class="form-group"><label for="tuFb">TU F/B, sidelobe floor (dB)</label><input class="g" type="number" id="tuFb" value="25"></div>
+                </div>
+                <label class="check"><input class="g" type="checkbox" id="rainOnInterf"> Apply rain fade to interferers too</label>
+                <div class="hint">Antenna model: 3GPP TR 38.901 horizontal pattern, G(φ) = Gmax − min(12·(φ/φ3dB)², F/B). AP φ3dB = sector beamwidth; TU φ3dB = 30° or 45°. All co-channel sectors are assumed to transmit downlink at the same time (synchronised TDD), interferer paths are assumed LoS, adjacent-channel leakage is ignored.</div>
+            </div>
+        </details>
+
+        <details class="sec">
+            <summary>Terrain and line of sight</summary>
+            <div class="sec-body">
+                <label class="check"><input class="g" type="checkbox" id="skipLos"> Skip LoS (assume clear terrain)</label>
+                <div class="row">
+                    <div class="form-group"><label for="fresnelPct">Fresnel clearance (% F1)</label><input class="g" type="number" id="fresnelPct" value="60" min="0" max="100"></div>
+                    <div class="form-group"><label for="clutterH">Clutter height (m)</label><input class="g" type="number" id="clutterH" value="0" min="0"></div>
+                </div>
+                <div class="hint warn-note">Elevation data is a bare-earth model (Copernicus 90 m / SRTM). Buildings and trees are not in it, so set a clutter height for urban areas. Paths with missing elevation data are flagged “LoS unverified”, not treated as clear.</div>
+            </div>
+        </details>
+
+        <h2>Map interaction</h2>
+        <div class="mode-selector" role="tablist">
+            <div class="mode-btn active" id="modeAP" tabindex="0" onclick="setMode('AP')">📍 Drop base station</div>
+            <div class="mode-btn" id="modeTU" tabindex="0" onclick="setMode('TU')">🏠 Drop terminal unit</div>
+        </div>
+
+        <div id="apControls">
+            <div class="hint">Click the map to deploy an AP with these defaults:</div>
+            <div class="form-group"><label for="defApAnt">AP antenna preset</label>
+                <select id="defApAnt">
+                    <option value="custom" selected>Custom (fields below)</option>
+                    <option value="ap60">60° sector, 5 dBi patch × 32 (20.1 dBi), 6 sectors</option>
+                    <option value="ap90">90° sector, 6 dBi patch × 16 (18.0 dBi), 4 sectors</option>
+                </select></div>
+            <div class="row">
+                <div class="form-group"><label for="defSectors">Sectors</label><input type="number" id="defSectors" value="4" min="1" max="12"></div>
+                <div class="form-group"><label for="defBeamwidth">Sector BW (°)</label><input type="number" id="defBeamwidth" value="90" min="10" max="360"></div>
+                <div class="form-group"><label for="defAzimuth">Array azimuth</label><input type="number" id="defAzimuth" value="0"></div>
+            </div>
+            <div class="row">
+                <div class="form-group"><label for="defApTx">Tx (dBm)</label><input type="number" id="defApTx" value="23"></div>
+                <div class="form-group"><label for="defApGain">Gain (dBi)</label><input type="number" id="defApGain" value="20" step="0.1"></div>
+                <div class="form-group"><label for="defApHeight">Height (m)</label><input type="number" id="defApHeight" value="30"></div>
+            </div>
+            <div id="apContainer"></div>
+            <button id="btnCoverage" class="btn-success" onclick="calculateCoverage()" disabled>1. Generate coverage sweep</button>
+        </div>
+
+        <div id="tuControls" style="display:none;">
+            <div class="hint">Click the map to drop a TU, or paste a list:</div>
+            <div class="form-group">
+                <label for="bulkTuInput">Bulk paste (lat, lon per line)</label>
+                <textarea id="bulkTuInput" placeholder="32.095, 34.956&#10;32.096, 34.958"></textarea>
+                <button onclick="bulkImportTUs()" style="margin-top:5px;">Import list</button>
+            </div>
+            <div class="row">
+                <div class="form-group"><label for="maxTuSector">Max TU / sector</label><input type="number" id="maxTuSector" value="16"></div>
+                <div class="form-group"><label for="maxTuAp">Max TU / AP</label><input type="number" id="maxTuAp" value="32"></div>
+            </div>
+            <button id="btnAssign" class="btn-warning" onclick="assignTUs()">2. Run smart assignment</button>
+            <button class="btn-secondary" onclick="exportCsv()">Export results (CSV)</button>
+        </div>
+
+        <button onclick="clearMap()" class="btn-secondary" style="margin-top:12px;">Clear entire map</button>
+    </div>
+
+    <div id="logBox">
+        <div class="log-msg" style="color:#4caf50;">[System] Engine ready. Mode: deploy AP.</div>
+    </div>
+</div>
+
+<div id="map">
+    <div class="legend" id="capLegend"></div>
+</div>
+</section>
+
+<!-- ===================== LINK CALCULATOR ===================== -->
+<section id="calcView" class="view">
+    <aside id="calcInputs">
+        <details class="sec" open>
+            <summary>System parameters</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group"><label for="cFreq">Frequency (GHz)</label><input class="c" type="number" id="cFreq" value="31" min="1" max="52" step="0.5"></div>
+                    <div class="form-group"><label for="cPol">Polarization</label><select class="c" id="cPol"><option value="V">Vertical</option><option value="H">Horizontal</option></select></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="cRainZone">Rain zone</label><select class="c" id="cRainZone"></select></div>
+                    <div class="form-group"><label for="cRainRate">R0.01 (mm/h)</label><input class="c" type="number" id="cRainRate" value="42" readonly></div>
+                    <div class="form-group"><label for="cRho">Vapour (g/m³)</label><input class="c" type="number" id="cRho" value="7.5" step="0.5"></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="cBw">Channel BW (MHz)</label><select class="c" id="cBw"></select></div>
+                    <div class="form-group"><label for="cGi">GI (µs)</label><select class="c" id="cGi"><option value="0.8">0.8</option><option value="1.6" selected>1.6</option><option value="3.2">3.2</option></select></div>
+                </div>
+            </div>
+        </details>
+        <details class="sec" open>
+            <summary>Antennas and radio</summary>
+            <div class="sec-body">
+                <div class="form-group"><label for="cTxPreset">Tx antenna</label><select class="c" id="cTxPreset"></select></div>
+                <div class="row">
+                    <div class="form-group"><label for="cTxGain">Tx gain (dBi)</label><input class="c" type="number" id="cTxGain" step="0.1" readonly></div>
+                    <div class="form-group"><label for="cTxPower">Tx power (dBm)</label><input class="c" type="number" id="cTxPower" value="23" step="0.1"></div>
+                </div>
+                <div class="form-group"><label for="cRxPreset">Rx antenna</label><select class="c" id="cRxPreset"></select></div>
+                <div class="row">
+                    <div class="form-group"><label for="cRxGain">Rx gain (dBi)</label><input class="c" type="number" id="cRxGain" step="0.1" readonly></div>
+                    <div class="form-group"><label for="cNf">Rx NF (dB)</label><input class="c" type="number" id="cNf" value="7" step="0.5"></div>
+                    <div class="form-group"><label for="cDishEff">Dish eff. (%)</label><input class="c" type="number" id="cDishEff" value="55"></div>
+                </div>
+                <div class="hint">Tx power default 23 dBm = 8 clusters × 14 dBm (14 + 10·log10 8).</div>
+            </div>
+        </details>
+        <details class="sec" open>
+            <summary>Capabilities and throughput</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group"><label for="cMaxMcs">Max MCS</label><input class="c" type="number" id="cMaxMcs" value="10" min="0" max="13"></div>
+                    <div class="form-group"><label for="cMargin">Margin (dB)</label><input class="c" type="number" id="cMargin" value="2" step="0.5"></div>
+                </div>
+                <div class="row">
+                    <div class="form-group"><label for="cStreams">Streams</label><input class="c" type="number" id="cStreams" value="2" min="1" max="16"></div>
+                    <div class="form-group"><label for="cMacEff">MAC efficiency (%)</label><input class="c" type="number" id="cMacEff" value="75" min="10" max="100"></div>
+                </div>
+            </div>
+        </details>
+        <details class="sec" open>
+            <summary>Tables and chart</summary>
+            <div class="sec-body">
+                <div class="row">
+                    <div class="form-group"><label for="cAvail">Target availability (%)</label><input class="c" type="number" id="cAvail" value="99.9" step="0.01" min="99" max="99.999"></div>
+                    <div class="form-group"><label for="cMaxDist">Chart range (km)</label><input class="c" type="number" id="cMaxDist" placeholder="auto" min="0.1" step="0.5"></div>
+                </div>
+                <div class="hint">Chart range is automatic when empty: 10 km with a dish at Rx, 2 km otherwise.</div>
+            </div>
+        </details>
+    </aside>
+
+    <div id="calcResults">
+        <div class="calc-grid">
+            <div class="calc-card">
+                <h3>Link budget at <input class="c" type="number" id="cDist" value="1" min="0.01" step="0.1"> km</h3>
+                <table class="budget" id="budgetTable"></table>
+            </div>
+            <div class="calc-card">
+                <h3>Wi-Fi 7 PHY at selected settings</h3>
+                <div class="table-wrap"><table class="data" id="phyTable"></table></div>
+            </div>
+        </div>
+        <div class="calc-card" style="margin-top:16px;">
+            <h3 id="chartTitle">Capacity vs. distance</h3>
+            <div id="chartBox"><div id="chartTip"></div></div>
+            <div class="chart-legend" id="chartLegend"></div>
+        </div>
+        <div class="calc-card">
+            <h3 id="t1Title">Maximum distance (km)</h3>
+            <div class="table-wrap"><table class="data" id="distTable"></table></div>
+        </div>
+        <div class="calc-card">
+            <h3 id="t2Title">User capacity per MCS and bandwidth (Mbps)</h3>
+            <div class="table-wrap"><table class="data" id="capTable"></table></div>
+        </div>
+        <p class="model-note">PHY model mirrors <code>wifi7Radio</code>: rate = tones × bits × coding rate / (12.8 µs + GI); threshold RSL = −114 + 10·log10(BW) + NF + SNR(MCS). A link closes at an MCS when RSL − threshold ≥ margin. Path loss = FSPL + gaseous (P.676) + rain at the chosen availability (P.838-3 / P.530-17), valid for 0.001–1 % outage.</p>
+    </div>
+</section>
+</main>
+<script>
+// =====================================================================
+//  SHARED ENGINE: Wi-Fi 7 PHY (mirrors wifi7Radio), ITU-R propagation,
+//  antenna patterns. Pure functions, no DOM.
+// =====================================================================
+const BW_TONES = { 20: 234, 40: 468, 60: 746, 80: 980, 140: 1726, 160: 1960, 320: 3920 };
+const SYMBOL_US = 12.8;
+const MCS_TABLE = [
+    { mcs: 0,  bits: 1,  rate: 1/2, snr: 2,  mod: 'BPSK 1/2' },
+    { mcs: 1,  bits: 2,  rate: 1/2, snr: 5,  mod: 'QPSK 1/2' },
+    { mcs: 2,  bits: 2,  rate: 3/4, snr: 8,  mod: 'QPSK 3/4' },
+    { mcs: 3,  bits: 4,  rate: 1/2, snr: 11, mod: '16-QAM 1/2' },
+    { mcs: 4,  bits: 4,  rate: 3/4, snr: 14, mod: '16-QAM 3/4' },
+    { mcs: 5,  bits: 6,  rate: 2/3, snr: 16, mod: '64-QAM 2/3' },
+    { mcs: 6,  bits: 6,  rate: 3/4, snr: 18, mod: '64-QAM 3/4' },
+    { mcs: 7,  bits: 6,  rate: 5/6, snr: 21, mod: '64-QAM 5/6' },
+    { mcs: 8,  bits: 8,  rate: 3/4, snr: 24, mod: '256-QAM 3/4' },
+    { mcs: 9,  bits: 8,  rate: 5/6, snr: 27, mod: '256-QAM 5/6' },
+    { mcs: 10, bits: 10, rate: 3/4, snr: 30, mod: '1024-QAM 3/4' },
+    { mcs: 11, bits: 10, rate: 5/6, snr: 33, mod: '1024-QAM 5/6' },
+    { mcs: 12, bits: 12, rate: 3/4, snr: 36, mod: '4096-QAM 3/4' },
+    { mcs: 13, bits: 12, rate: 5/6, snr: 39, mod: '4096-QAM 5/6' }
+];
+const MCS_COLORS = ['#d7191c','#e8462a','#f07a31','#f6a23c','#fdc54f','#fee36b','#e6f28a',
+                    '#bfe38a','#8fd17f','#5bbb7a','#2ea27c','#1b8a8a','#2166ac','#3b3b9e'];
+MCS_TABLE.forEach((m, i) => m.color = MCS_COLORS[i]);
+
+/** PHY rate per spatial stream, Mbps (wifi7Radio.capacity) */
+function phyRate(bw, mcs, gi) {
+    const m = MCS_TABLE[mcs];
+    return BW_TONES[bw] * m.bits * m.rate / (SYMBOL_US + gi);
+}
+/** Thermal noise in channel, dBm (-114 dBm/MHz + NF) */
+function noiseDbm(bw, nf) { return -114 + 10 * Math.log10(bw) + nf; }
+/** wifi7Radio.thresholdRsl */
+function thresholdRsl(bw, mcs, nf) { return noiseDbm(bw, nf) + MCS_TABLE[mcs].snr; }
+/** Highest MCS whose SNR requirement + margin is met, or -1 */
+function bestMcs(snrDb, maxMcs, margin) {
+    let best = -1;
+    for (let i = 0; i <= maxMcs; i++) if (snrDb - margin >= MCS_TABLE[i].snr) best = i;
+    return best;
+}
+
+// ---- ITU-R P.837 rain zones (R0.01, mm/h) ----
+const RAIN_ZONES = { A: 8, B: 12, C: 15, D: 19, E: 22, F: 28, G: 30, H: 32, J: 35, K: 42, L: 60, M: 63, N: 95, P: 145, Q: 115 };
+
+// ---- ITU-R P.838-3 coefficients ----
+const P838 = {
+    kH: { t: [[-5.33980,-0.10008,1.13098],[-0.35351,1.26970,0.45400],[-0.23789,0.86036,0.15354],[-0.94158,0.64552,0.16817]], m: -0.18961, c: 0.71147 },
+    kV: { t: [[-3.80595,0.56934,0.81061],[-3.44965,-0.22911,0.51059],[-0.39902,0.73042,0.11899],[0.50167,1.07319,0.27195]], m: -0.16398, c: 0.63297 },
+    aH: { t: [[-0.14318,1.82442,-0.55187],[0.29591,0.77564,0.19822],[0.32177,0.63773,0.13164],[-5.37610,-0.96230,1.47828],[16.1721,-3.29980,3.43990]], m: 0.67849, c: -1.95537 },
+    aV: { t: [[-0.07771,2.33840,-0.76284],[0.56727,0.95545,0.54039],[-0.20238,1.14520,0.26809],[-48.2991,0.791669,0.116226],[48.5833,0.791459,0.116479]], m: -0.053739, c: 0.83433 }
+};
+function p838Sum(set, lf) { return set.t.reduce((s, [a, b, c]) => s + a * Math.exp(-Math.pow((lf - b) / c, 2)), 0) + set.m * lf + set.c; }
+const _p838Cache = new Map();
+function p838(f, pol) {
+    const key = f + pol;
+    if (_p838Cache.has(key)) return _p838Cache.get(key);
+    const lf = Math.log10(f);
+    const r = pol === 'H'
+        ? { k: Math.pow(10, p838Sum(P838.kH, lf)), a: p838Sum(P838.aH, lf) }
+        : { k: Math.pow(10, p838Sum(P838.kV, lf)), a: p838Sum(P838.aV, lf) };
+    _p838Cache.set(key, r);
+    return r;
+}
+/** P.530-17 distance factor r (capped at 2.5) */
+function pathReduction(d, R, f, a) {
+    const den = 0.477 * Math.pow(d, 0.633) * Math.pow(R, 0.073 * a) * Math.pow(f, 0.123) - 10.579 * (1 - Math.exp(-0.024 * d));
+    const r = den > 0 ? 1 / den : 2.5;
+    return Math.min(r, 2.5);
+}
+/** P.530-17 scaling A_p / A_0.01, p in % (0.001..1) */
+function rainScale(p, f) {
+    const C0 = f >= 10 ? 0.12 + 0.4 * Math.log10(Math.pow(f / 10, 0.8)) : 0.12;
+    const C1 = Math.pow(0.07, C0) * Math.pow(0.12, 1 - C0);
+    const C2 = 0.855 * C0 + 0.546 * (1 - C0);
+    const C3 = 0.139 * C0 + 0.043 * (1 - C0);
+    return C1 * Math.pow(p, -(C2 + C3 * Math.log10(p)));
+}
+/** Rain attenuation (dB) exceeded for (100-avail)% of the time */
+function rainLoss(f, pol, R, dKm, avail) {
+    if (!(R > 0) || !(dKm > 0)) return 0;
+    const p = Math.min(1, Math.max(0.001, 100 - avail));
+    const { k, a } = p838(f, pol);
+    const gamma = k * Math.pow(R, a);
+    return gamma * dKm * pathReduction(dKm, R, f, a) * rainScale(p, f);
+}
+function rainGamma(f, pol, R) { const { k, a } = p838(f, pol); return k * Math.pow(R, a); }
+
+/** ITU-R P.676 Annex 2 specific gaseous attenuation (dB/km), sea level, 15 °C. Valid to ~54 GHz. */
+const _gasCache = new Map();
+function gasSpecific(fIn, rho) {
+    const f = Math.min(Math.max(fIn, 1), 52);
+    const key = f + '|' + rho;
+    if (_gasCache.has(key)) return _gasCache.get(key);
+    const rp = 1, rt = 288 / (273 + 15);
+    const phi = (a, b, c, d) => Math.pow(rp, a) * Math.pow(rt, b) * Math.exp(c * (1 - rp) + d * (1 - rt));
+    const x1 = phi(0.0717, -1.8132, 0.0156, -1.6515), x2 = phi(0.5146, -4.6368, -0.1921, -5.7416), x3 = phi(0.3414, -6.5851, 0.2130, -8.5854);
+    const go = (7.2 * Math.pow(rt, 2.8) / (f * f + 0.34 * rp * rp * Math.pow(rt, 1.6)) + 0.62 * x3 / (Math.pow(54 - f, 1.16 * x1) + 0.83 * x2)) * f * f * rp * rp * 1e-3;
+    const e1 = 0.955 * rp * Math.pow(rt, 0.68) + 0.006 * rho, e2 = 0.735 * rp * Math.pow(rt, 0.5) + 0.0353 * Math.pow(rt, 4) * rho;
+    const g = fi => 1 + Math.pow((f - fi) / (f + fi), 2);
+    const E = (c) => Math.exp(c * (1 - rt));
+    const gw = (3.98 * e1 * E(2.23) / (Math.pow(f - 22.235, 2) + 9.42 * e1 * e1) * g(22)
+        + 11.96 * e1 * E(0.7) / (Math.pow(f - 183.31, 2) + 11.14 * e1 * e1)
+        + 0.081 * e1 * E(6.44) / (Math.pow(f - 321.226, 2) + 6.29 * e1 * e1)
+        + 3.66 * e1 * E(1.6) / (Math.pow(f - 325.153, 2) + 9.22 * e1 * e1)
+        + 25.37 * e1 * E(1.09) / Math.pow(f - 380, 2)
+        + 17.4 * e1 * E(1.46) / Math.pow(f - 448, 2)
+        + 844.6 * e1 * E(0.17) / Math.pow(f - 557, 2) * g(557)
+        + 290 * e1 * E(0.41) / Math.pow(f - 752, 2) * g(752)
+        + 8.3328e4 * e2 * E(0.99) / Math.pow(f - 1780, 2) * g(1780)) * f * f * Math.pow(rt, 2.5) * rho * 1e-4;
+    const r = go + gw;
+    _gasCache.set(key, r);
+    return r;
+}
+function fspl(dKm, fGHz) { return 20 * Math.log10(dKm) + 20 * Math.log10(fGHz) + 92.45; }
+
+/** 3GPP TR 38.901 horizontal pattern, relative dB (<= 0) */
+function patternDb(offDeg, bw3, floorDb) { return -Math.min(12 * Math.pow(offDeg / bw3, 2), floorDb); }
+function dishGain(diamFt, fGHz, eff) {
+    const D = diamFt * 0.3048, lam = 0.299792458 / fGHz;
+    return 10 * Math.log10(eff * Math.pow(Math.PI * D / lam, 2));
+}
+
+const TU_ANTENNAS = {
+    t30: { label: '30°, 8 clusters of 2×2 patches (20 dBi)', short: '30° / 20 dBi', gain: 20, bw: 30 },
+    t45: { label: '45°, 8 clusters of 2×1 patches (17 dBi)', short: '45° / 17 dBi', gain: 17, bw: 45 }
+};
+
+// ---- Geodesy ----
+const DEG = Math.PI / 180;
+function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371, dLat = (lat2 - lat1) * DEG, dLon = (lon2 - lon1) * DEG;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * DEG) * Math.cos(lat2 * DEG) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function getBearing(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * DEG;
+    const y = Math.sin(dLon) * Math.cos(lat2 * DEG);
+    const x = Math.cos(lat1 * DEG) * Math.sin(lat2 * DEG) - Math.sin(lat1 * DEG) * Math.cos(lat2 * DEG) * Math.cos(dLon);
+    return (Math.atan2(y, x) / DEG + 360) % 360;
+}
+function getDestination(lat, lon, distanceKm, bearing) {
+    const R = 6371, la = lat * DEG, lo = lon * DEG, b = bearing * DEG, dr = distanceKm / R;
+    const outLat = Math.asin(Math.sin(la) * Math.cos(dr) + Math.cos(la) * Math.sin(dr) * Math.cos(b));
+    const outLon = lo + Math.atan2(Math.sin(b) * Math.sin(dr) * Math.cos(la), Math.cos(dr) - Math.sin(la) * Math.sin(outLat));
+    return { lat: outLat / DEG, lng: outLon / DEG };
+}
+/** Signed difference a-b in [-180, 180) */
+function angDiff(a, b) { return ((((a - b) % 360) + 540) % 360) - 180; }
+
+const K_FACTOR = 4 / 3, EARTH_R_M = 6371000;
+// =====================================================================
+//  MAP PLANNER
+// =====================================================================
+const $ = id => document.getElementById(id);
+const num = id => parseFloat($(id).value);
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const fmt = (v, d = 1) => (v === -Infinity || v == null || isNaN(v)) ? '–' : v.toFixed(d);
+const CH_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#9a6324'];
+const chColor = ch => CH_COLORS[((ch - 1) % CH_COLORS.length + CH_COLORS.length) % CH_COLORS.length];
+
+// --- populate selects ---
+function fillSelect(sel, entries, selected) {
+    sel.innerHTML = entries.map(([v, t]) => `<option value="${v}"${String(v) === String(selected) ? ' selected' : ''}>${t}</option>`).join('');
+}
+fillSelect($('channelBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 80);
+fillSelect($('rainZone'), [...Object.entries(RAIN_ZONES).map(([z, r]) => [z, `${z} (${r} mm/h)`]), ['custom', 'Custom']], 'K');
+fillSelect($('tuAnt'), Object.entries(TU_ANTENNAS).map(([k, a]) => [k, a.label]), 't30');
+
+function syncRainRate(zoneSel, rateInput) {
+    const z = $(zoneSel).value;
+    if (z === 'custom') { $(rateInput).readOnly = false; }
+    else { $(rateInput).readOnly = true; $(rateInput).value = RAIN_ZONES[z]; }
+}
+$('rainZone').addEventListener('change', () => syncRainRate('rainZone', 'rainRate'));
+
+$('defApAnt').addEventListener('change', () => {
+    const v = $('defApAnt').value;
+    if (v === 'ap60') { $('defApGain').value = (5 + 10 * Math.log10(32)).toFixed(1); $('defBeamwidth').value = 60; $('defSectors').value = 6; }
+    if (v === 'ap90') { $('defApGain').value = (6 + 10 * Math.log10(16)).toFixed(1); $('defBeamwidth').value = 90; $('defSectors').value = 4; }
+});
+
+function readCfg() {
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    return {
+        freq: clamp(num('freq') || 26, 1, 52),
+        bw: parseInt($('channelBw').value),
+        gi: num('gi'),
+        maxMcs: clamp(Math.round(num('maxMcs')), 0, 13),
+        streams: Math.max(1, Math.round(num('streams')) || 1),
+        macEff: clamp(num('macEff') || 100, 1, 100) / 100,
+        margin: num('margin') || 0,
+        apNf: num('apNf'),
+        avail: clamp(num('avail') || 99.99, 99, 99.999),
+        rainR: Math.max(0, num('rainRate') || 0),
+        pol: $('pol').value,
+        rho: Math.max(0, num('rho') || 0),
+        tuAnt: $('tuAnt').value,
+        tuTx: num('tuTx'),
+        tuNf: num('tuNf'),
+        hCpe: num('cpeHeight') || 0,
+        interf: $('useInterf').checked,
+        activity: clamp(num('activity'), 0, 100) / 100,
+        apFb: num('apFb'),
+        tuFb: num('tuFb'),
+        rainOnInterf: $('rainOnInterf').checked,
+        skipLos: $('skipLos').checked,
+        fresnel: clamp(num('fresnelPct') || 0, 0, 100) / 100,
+        clutterH: Math.max(0, num('clutterH') || 0)
+    };
+}
+
+// --- MAP INIT ---
+const map = L.map('map', { preferCanvas: true }).setView([32.095, 34.956], 13);
+const canvasRenderer = L.canvas({ padding: 0.5 });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+setTimeout(() => map.invalidateSize(), 300);
+
+let currentMode = 'AP';
+let aps = [], apCounter = 1, apMarkers = {}, apLabels = {}, apCoverageLayers = {};
+let tus = [], tuCounter = 1, tuMarkers = {}, tuLabels = {}, tuLines = {};
+
+function logMsg(msg, type = 'info') {
+    const box = $('logBox');
+    const color = type === 'warn' ? '#ffeb3b' : type === 'error' ? '#f44336' : '#4caf50';
+    const div = document.createElement('div');
+    div.className = 'log-msg'; div.style.color = color; div.textContent = msg;
+    box.appendChild(div); box.scrollTop = box.scrollHeight;
+}
+
+// --- STALE STATE ---
+function markStale() {
+    $('staleBadge').hidden = false;
+    $('btnCoverage').classList.add('stale-btn'); $('btnAssign').classList.add('stale-btn');
+}
+function clearStale(which) {
+    $(which).classList.remove('stale-btn');
+    if (!$('btnCoverage').classList.contains('stale-btn') && !$('btnAssign').classList.contains('stale-btn')) $('staleBadge').hidden = true;
+}
+document.querySelectorAll('#sidebar .g').forEach(el => el.addEventListener('change', () => { updateAll(); markStale(); }));
+
+// --- DYNAMIC UI ---
+function updateAll() { updateLegend(); refreshAPLabels(); }
+
+function updateLegend() {
+    const c = readCfg();
+    const box = $('capLegend');
+    let html = `<div style="font-weight:bold;margin-bottom:6px;">${c.interf ? 'DL SINR' : 'DL SNR'} zones, PHY per stream<br><span style="font-weight:normal;color:#666;">${c.bw} MHz, GI ${c.gi} µs, ${c.avail}% avail.</span></div>`;
+    for (let m = c.maxMcs; m >= 0; m--) {
+        const t = MCS_TABLE[m];
+        html += `<div class="legend-item"><div class="legend-color" style="background:${t.color};"></div>MCS ${t.mcs} (${t.mod}) <b>&nbsp;${phyRate(c.bw, m, c.gi).toFixed(1)} Mbps</b></div>`;
+    }
+    html += `<div class="legend-item"><div class="legend-color" style="background:#9e9e9e;"></div>Terrain data unavailable</div>`;
+    box.innerHTML = html;
+}
+
+function sectorPeak(c) { return phyRate(c.bw, c.maxMcs, c.gi) * c.streams * 2; }
+
+function refreshAPLabels() {
+    const c = readCfg();
+    const cap = sectorPeak(c).toFixed(0);
+    aps.forEach(ap => {
+        if (apLabels[ap.id]) map.removeLayer(apLabels[ap.id]);
+        apLabels[ap.id] = L.marker([ap.lat, ap.lng], {
+            interactive: false,
+            icon: L.divIcon({ className: 'cap-label-container', html: `<span class="cap-label">${ap.numSectors}× ${cap} Mbps</span>`, iconSize: null, iconAnchor: [-12, 10] })
+        }).addTo(map);
+    });
+}
+
+function setMode(mode) {
+    currentMode = mode;
+    $('modeAP').className = mode === 'AP' ? 'mode-btn active' : 'mode-btn';
+    $('modeTU').className = mode === 'TU' ? 'mode-btn active' : 'mode-btn';
+    $('apControls').style.display = mode === 'AP' ? 'block' : 'none';
+    $('tuControls').style.display = mode === 'TU' ? 'block' : 'none';
+    logMsg(`Mode changed to: ${mode === 'AP' ? 'deploy base station' : 'deploy terminal unit'}`);
+}
+['modeAP', 'modeTU'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(id).click(); } }));
+
+map.on('click', e => { if (currentMode === 'AP') deployAP(e.latlng.lat, e.latlng.lng); else deployTU(e.latlng.lat, e.latlng.lng); });
+
+// --- AP MANAGEMENT ---
+function defaultChannels(n) { const r = n === 3 ? 3 : 2; return Array.from({ length: n }, (_, i) => (i % r) + 1); }
+function sectorCenter(ap, s) {
+    const start = ap.baseAzimuth - (ap.numSectors * ap.sectorBeamwidth) / 2;
+    return (((start + s * ap.sectorBeamwidth + ap.sectorBeamwidth / 2) % 360) + 360) % 360;
+}
+/** Sector whose centre is closest to the bearing, if within its beamwidth */
+function findSector(ap, bearing) {
+    let best = null;
+    for (let s = 0; s < ap.numSectors; s++) {
+        const diff = angDiff(bearing, sectorCenter(ap, s));
+        if (Math.abs(diff) <= ap.sectorBeamwidth / 2 + 1e-9 && (!best || Math.abs(diff) < Math.abs(best.diff))) best = { s, diff };
+    }
+    return best;
+}
+
+function apPopup(ap) { return `<b>${esc(ap.name)}</b><br>${ap.numSectors} sectors × ${ap.sectorBeamwidth}°<br>${ap.txPower} dBm, ${ap.apGain} dBi, ${ap.height} m<br>MU-MIMO enabled`; }
+
+function deployAP(lat, lng) {
+    const n = Math.max(1, Math.min(12, parseInt($('defSectors').value) || 4));
+    const ap = {
+        id: apCounter, name: `Base Station ${apCounter}`, lat, lng,
+        height: num('defApHeight') || 30, txPower: isNaN(num('defApTx')) ? 23 : num('defApTx'), apGain: isNaN(num('defApGain')) ? 20 : num('defApGain'),
+        baseAzimuth: num('defAzimuth') || 0, numSectors: n, sectorBeamwidth: num('defBeamwidth') || 90,
+        channels: defaultChannels(n), collapsed: false
+    };
+    aps.push(ap); apCoverageLayers[ap.id] = [];
+    apMarkers[ap.id] = L.marker([lat, lng]).addTo(map).bindPopup(() => apPopup(ap));
+    apCounter++;
+    renderAPList(); refreshAPLabels(); markStale();
+    $('btnCoverage').disabled = false;
+    logMsg(`Deployed ${ap.name}.`);
+}
+
+function toggleCollapse(id) { const ap = aps.find(a => a.id === id); if (ap) { ap.collapsed = !ap.collapsed; renderAPList(); } }
+
+function renderAPList() {
+    const container = $('apContainer'); container.innerHTML = '';
+    aps.forEach(ap => {
+        const chHtml = ap.channels.map((ch, s) =>
+            `<div class="form-group"><label>S${s + 1} <span style="color:${chColor(ch)}">■</span></label><input type="number" min="1" value="${ch}" onchange="updateAP(${ap.id}, 'channel', this.value, ${s})"></div>`).join('');
+        const card = document.createElement('div'); card.className = 'ap-card';
+        card.innerHTML = `
+            <div class="ap-card-header">
+                <button class="btn-toggle" onclick="toggleCollapse(${ap.id})" aria-label="Collapse">${ap.collapsed ? '+' : '−'}</button>
+                <input type="text" value="${esc(ap.name)}" onchange="updateAP(${ap.id}, 'name', this.value)" aria-label="AP name">
+                <button class="btn-danger" onclick="deleteAP(${ap.id})">Delete</button>
+            </div>
+            <div style="display:${ap.collapsed ? 'none' : 'block'};">
+                <div class="row">
+                    <div class="form-group"><label>Tx (dBm)</label><input type="number" value="${ap.txPower}" onchange="updateAP(${ap.id}, 'txPower', this.value)"></div>
+                    <div class="form-group"><label>Gain (dBi)</label><input type="number" step="0.1" value="${ap.apGain}" onchange="updateAP(${ap.id}, 'apGain', this.value)"></div>
+                    <div class="form-group"><label>H (m)</label><input type="number" value="${ap.height}" onchange="updateAP(${ap.id}, 'height', this.value)"></div>
+                </div>
+                <div class="sector-box">
+                    <div class="row">
+                        <div class="form-group"><label>Sectors</label><input type="number" min="1" max="12" value="${ap.numSectors}" onchange="updateAP(${ap.id}, 'numSectors', this.value)"></div>
+                        <div class="form-group"><label>BW (°)</label><input type="number" value="${ap.sectorBeamwidth}" onchange="updateAP(${ap.id}, 'sectorBeamwidth', this.value)"></div>
+                        <div class="form-group"><label>Azimuth</label><input type="number" value="${ap.baseAzimuth}" onchange="updateAP(${ap.id}, 'baseAzimuth', this.value)"></div>
+                    </div>
+                    <label>Channels</label><div class="channel-grid">${chHtml}</div>
+                </div>
+            </div>`;
+        container.appendChild(card);
+    });
+}
+
+function updateAP(id, field, value, sIdx = null) {
+    const ap = aps.find(a => a.id === id); if (!ap) return;
+    if (field === 'name') ap.name = value;
+    else if (field === 'channel' && sIdx !== null) ap.channels[sIdx] = Math.max(1, parseInt(value) || 1);
+    else {
+        const v = parseFloat(value); if (isNaN(v)) return;
+        if (field === 'numSectors') { ap.numSectors = Math.max(1, Math.min(12, Math.round(v))); ap.channels = defaultChannels(ap.numSectors); }
+        else ap[field] = v;
+    }
+    renderAPList(); refreshAPLabels(); markStale();
+}
+
+function resetTuVisual(tu) {
+    if (tuLines[tu.id]) { map.removeLayer(tuLines[tu.id]); delete tuLines[tu.id]; }
+    if (tuLabels[tu.id]) { map.removeLayer(tuLabels[tu.id]); delete tuLabels[tu.id]; }
+    if (tuMarkers[tu.id]) tuMarkers[tu.id].setStyle({ color: '#333', fillColor: '#fff' });
+}
+
+function deleteAP(id) {
+    aps = aps.filter(a => a.id !== id);
+    if (apMarkers[id]) { map.removeLayer(apMarkers[id]); delete apMarkers[id]; }
+    if (apLabels[id]) { map.removeLayer(apLabels[id]); delete apLabels[id]; }
+    if (apCoverageLayers[id]) { apCoverageLayers[id].forEach(l => map.removeLayer(l)); delete apCoverageLayers[id]; }
+    let orphaned = 0;
+    tus.forEach(tu => { if (tu.result && tu.result.apId === id) { tu.result = null; tu.reason = 'Serving AP deleted'; resetTuVisual(tu); orphaned++; } });
+    $('btnCoverage').disabled = aps.length === 0;
+    renderAPList(); markStale();
+    logMsg(`AP deleted.${orphaned ? ` ${orphaned} TU(s) unassigned; re-run assignment.` : ''}`, orphaned ? 'warn' : 'info');
+}
+
+function clearMap() {
+    aps = []; apCounter = 1;
+    Object.values(apMarkers).forEach(l => map.removeLayer(l)); apMarkers = {};
+    Object.values(apLabels).forEach(l => map.removeLayer(l)); apLabels = {};
+    Object.values(apCoverageLayers).forEach(arr => arr.forEach(l => map.removeLayer(l))); apCoverageLayers = {};
+    tus = []; tuCounter = 1;
+    Object.values(tuMarkers).forEach(l => map.removeLayer(l)); tuMarkers = {};
+    Object.values(tuLabels).forEach(l => map.removeLayer(l)); tuLabels = {};
+    Object.values(tuLines).forEach(l => map.removeLayer(l)); tuLines = {};
+    $('btnCoverage').disabled = true;
+    renderAPList(); $('staleBadge').hidden = true;
+    $('btnCoverage').classList.remove('stale-btn'); $('btnAssign').classList.remove('stale-btn');
+    logMsg('Map cleared.', 'warn');
+}
+
+// --- TU MANAGEMENT ---
+function deployTU(lat, lng) {
+    const tu = { id: tuCounter, lat, lng, ant: $('tuAnt').value, result: null, reason: 'Not assigned yet' };
+    tus.push(tu);
+    tuMarkers[tu.id] = L.circleMarker([lat, lng], { color: '#333', fillColor: '#fff', fillOpacity: 1, radius: 5, weight: 2 })
+        .addTo(map).bindPopup(() => tuPopup(tu), { minWidth: 240 });
+    tuCounter++;
+    markStale();
+}
+
+function bulkImportTUs() {
+    let count = 0, bad = 0;
+    $('bulkTuInput').value.split('\n').forEach(line => {
+        if (!line.trim()) return;
+        const parts = line.split(/[,;\t ]+/).filter(Boolean);
+        const lat = parseFloat(parts[0]), lng = parseFloat(parts[1]);
+        if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) { deployTU(lat, lng); count++; } else bad++;
+    });
+    logMsg(`Imported ${count} terminal units.${bad ? ` Skipped ${bad} unreadable line(s).` : ''}`, bad ? 'warn' : 'info');
+    $('bulkTuInput').value = '';
+}
+
+function setTuAntenna(id, key) {
+    const tu = tus.find(t => t.id === id); if (!tu || !TU_ANTENNAS[key]) return;
+    tu.ant = key; markStale();
+    logMsg(`TU ${id} antenna set to ${TU_ANTENNAS[key].short}. Re-run assignment to update its link.`);
+    if (tuMarkers[id]) tuMarkers[id].setPopupContent(tuPopup(tu));
+}
+
+function deleteTU(id) {
+    const tu = tus.find(t => t.id === id); if (!tu) return;
+    resetTuVisual(tu);
+    if (tuMarkers[id]) { map.removeLayer(tuMarkers[id]); delete tuMarkers[id]; }
+    tus = tus.filter(t => t.id !== id);
+    logMsg(`TU ${id} deleted.`); markStale();
+}
+
+function tuPopup(tu) {
+    const antSel = `<select onchange="setTuAntenna(${tu.id}, this.value)">${Object.entries(TU_ANTENNAS).map(([k, a]) => `<option value="${k}"${k === tu.ant ? ' selected' : ''}>${a.label}</option>`).join('')}</select>`;
+    let body = '';
+    const r = tu.result;
+    if (!r) {
+        body = `<div class="bad">Unassigned</div><div>${esc(tu.reason || '')}</div>`;
+    } else {
+        const ap = aps.find(a => a.id === r.apId);
+        const e = r.ev, c = r.cfg;
+        const losTxt = r.los.status === 'clear' ? `Clear (${(r.los.minClr * 100).toFixed(0)}% F1 min.)`
+            : r.los.status === 'unknown' ? '<span class="flag">Unverified (no terrain data)</span>' : 'Not checked (skip LoS)';
+        body = `<table>
+            <tr><td>Serving</td><td>${esc(ap ? ap.name : '?')}, S${r.s + 1} ${r.half === 0 ? 'left' : 'right'} half, ch ${r.ch}</td></tr>
+            <tr><td>Distance</td><td>${e.d.toFixed(2)} km, ${e.off.toFixed(0)}° off boresight</td></tr>
+            <tr><td>LoS</td><td>${losTxt}</td></tr>
+            <tr><td>MU-MIMO group</td><td>${r.groupSize} users</td></tr></table>
+            <div class="sub">Downlink</div><table>
+            <tr><td>Path loss</td><td>${e.L.toFixed(1)} dB (rain ${e.rain.toFixed(1)} dB @ ${c.avail}%)</td></tr>
+            <tr><td>RSL</td><td>${e.rslDl.toFixed(1)} dBm</td></tr>
+            <tr><td>SNR / SINR</td><td>${e.snrDl.toFixed(1)} / ${c.interf ? e.sinrDl.toFixed(1) : '–'} dB</td></tr>
+            <tr><td>I/N</td><td>${c.interf ? fmt(e.iOverN) + ' dB' : 'off'}</td></tr>
+            <tr><td>MCS</td><td>${e.mcsDl} (${MCS_TABLE[e.mcsDl].mod})</td></tr>
+            <tr><td style="color:#007bff;font-weight:bold;">Peak PHY</td><td>${r.peak.toFixed(1)} Mbps</td></tr>
+            <tr><td style="color:#28a745;font-weight:bold;">Avg user</td><td>${r.avg.toFixed(1)} Mbps</td></tr></table>
+            <div class="sub">Uplink (SNR, TU ${c.tuTx} dBm)</div><table>
+            <tr><td>RSL / SNR</td><td>${e.rslUl.toFixed(1)} dBm / ${e.snrUl.toFixed(1)} dB</td></tr>
+            <tr><td>MCS</td><td>${e.mcsUl} (${MCS_TABLE[e.mcsUl].mod}), ${(phyRate(c.bw, e.mcsUl, c.gi) * c.streams).toFixed(0)} Mbps PHY</td></tr></table>`;
+    }
+    return `<div class="pop"><strong class="t">TU ${tu.id}</strong>${body}
+        <div class="sub">Antenna</div>${antSel}
+        <button class="btn-danger" style="margin-top:6px;" onclick="deleteTU(${tu.id})">Delete TU</button></div>`;
+}
+
+function renderTuLabel(tu) {
+    if (tuLabels[tu.id]) map.removeLayer(tuLabels[tu.id]);
+    const r = tu.result;
+    tuLabels[tu.id] = L.marker([tu.lat, tu.lng], {
+        interactive: false,
+        icon: L.divIcon({ className: 'tu-label-container', html: `<span class="tu-label">P: ${r.peak.toFixed(0)}M<br>A: ${r.avg.toFixed(0)}M</span>`, iconSize: null, iconAnchor: [-8, -8] })
+    }).addTo(map);
+}
+
+// --- LINK EVALUATION ---
+function linkLoss(c, dKm, withRain) {
+    const d = Math.max(dKm, 0.001);
+    const rain = withRain ? rainLoss(c.freq, c.pol, c.rainR, d, c.avail) : 0;
+    return { L: fspl(d, c.freq) + gasSpecific(c.freq, c.rho) * d + rain, rain };
+}
+
+/** Full DL (SNR + SINR) and UL (SNR) evaluation of a TU location served by sector s of ap */
+function evalLink(c, ap, s, lat, lng, antKey) {
+    const ant = TU_ANTENNAS[antKey] || TU_ANTENNAS.t30;
+    const d = getDistance(ap.lat, ap.lng, lat, lng);
+    const off = angDiff(getBearing(ap.lat, ap.lng, lat, lng), sectorCenter(ap, s));
+    const gAp = ap.apGain + patternDb(off, ap.sectorBeamwidth, c.apFb);
+    const { L, rain } = linkLoss(c, d, true);
+    const rslDl = ap.txPower + gAp + ant.gain - L;
+    const nDl = noiseDbm(c.bw, c.tuNf);
+    const snrDl = rslDl - nDl;
+    let iMw = 0;
+    if (c.interf && c.activity > 0) {
+        const ch = ap.channels[s];
+        const brgServing = getBearing(lat, lng, ap.lat, ap.lng);
+        for (const b of aps) {
+            const di = getDistance(b.lat, b.lng, lat, lng);
+            const brgFromB = getBearing(b.lat, b.lng, lat, lng);
+            const offRx = b.id === ap.id ? 0 : angDiff(getBearing(lat, lng, b.lat, b.lng), brgServing);
+            const gR = ant.gain + patternDb(offRx, ant.bw, c.tuFb);
+            const Li = linkLoss(c, di, c.rainOnInterf).L;
+            for (let t = 0; t < b.numSectors; t++) {
+                if ((b.id === ap.id && t === s) || b.channels[t] !== ch) continue;
+                const gT = b.apGain + patternDb(angDiff(brgFromB, sectorCenter(b, t)), b.sectorBeamwidth, c.apFb);
+                iMw += c.activity * Math.pow(10, (b.txPower + gT + gR - Li) / 10);
+            }
+        }
+    }
+    const sinrDl = rslDl - 10 * Math.log10(Math.pow(10, nDl / 10) + iMw);
+    const iOverN = iMw > 0 ? 10 * Math.log10(iMw) - nDl : -Infinity;
+    const mcsDl = bestMcs(c.interf ? sinrDl : snrDl, c.maxMcs, c.margin);
+    const rslUl = c.tuTx + ant.gain + gAp - L;
+    const snrUl = rslUl - noiseDbm(c.bw, c.apNf);
+    const mcsUl = bestMcs(snrUl, c.maxMcs, c.margin);
+    return { d, off, gAp, L, rain, rslDl, snrDl, sinrDl, iOverN, mcsDl, rslUl, snrUl, mcsUl };
+}
+
+/** Boresight downlink range per MCS (thermal noise only), km */
+function mcsRadii(c, ap, antKey) {
+    const ant = TU_ANTENNAS[antKey] || TU_ANTENNAS.t30;
+    const nDl = noiseDbm(c.bw, c.tuNf);
+    const eirp = ap.txPower + ap.apGain + ant.gain;
+    return MCS_TABLE.slice(0, c.maxMcs + 1).map(m => {
+        const need = nDl + m.snr + c.margin;
+        const ok = d => eirp - linkLoss(c, d, true).L >= need;
+        let lo = 0.001, hi = 80;
+        if (!ok(lo)) return { mcs: m.mcs, radiusKm: 0 };
+        if (ok(hi)) return { mcs: m.mcs, radiusKm: hi };
+        for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (ok(mid)) lo = mid; else hi = mid; }
+        return { mcs: m.mcs, radiusKm: lo };
+    });
+}
+
+// --- ELEVATION (cached, batched, parallel, with explicit failure) ---
+const elevCache = new Map();
+const ekey = (lat, lng) => lat.toFixed(5) + ',' + lng.toFixed(5);
+async function fetchJson(url, opts = {}, ms = 8000) {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+    try { const r = await fetch(url, { ...opts, signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+    finally { clearTimeout(t); }
+}
+const ELEV_PROVIDERS = [
+    { name: 'Open-Meteo', run: async pts => (await fetchJson(`https://api.open-meteo.com/v1/elevation?latitude=${pts.map(p => p[0]).join(',')}&longitude=${pts.map(p => p[1]).join(',')}`)).elevation },
+    { name: 'OpenTopoData', run: async pts => (await fetchJson(`https://api.opentopodata.org/v1/srtm30m?locations=${pts.map(p => p.join(',')).join('|')}`)).results.map(r => r.elevation == null ? 0 : r.elevation) },
+    { name: 'Open-Elevation', run: async pts => (await fetchJson('https://api.open-elevation.com/api/v1/lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locations: pts.map(p => ({ latitude: p[0], longitude: p[1] })) }) })).results.map(r => r.elevation) }
+];
+let preferredProvider = 0;
+async function fetchBatch(pts) {
+    for (let k = 0; k < ELEV_PROVIDERS.length; k++) {
+        const idx = (preferredProvider + k) % ELEV_PROVIDERS.length;
+        try {
+            const r = await ELEV_PROVIDERS[idx].run(pts);
+            if (Array.isArray(r) && r.length === pts.length && r.every(v => typeof v === 'number' && isFinite(v))) { preferredProvider = idx; return r; }
+        } catch (e) { /* try next provider */ }
+    }
+    return null;
+}
+/** points: [[lat,lng],...] -> { elev: (number|null)[], failed: count of points without data } */
+async function getElevations(points, onProgress) {
+    const keys = points.map(p => ekey(p[0], p[1]));
+    const missing = [...new Set(keys.filter(k => !elevCache.has(k)))];
+    const batches = [];
+    for (let i = 0; i < missing.length; i += 90) batches.push(missing.slice(i, i + 90));
+    let done = 0;
+    const CONCURRENCY = 3;
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+        await Promise.all(batches.slice(i, i + CONCURRENCY).map(async b => {
+            const r = await fetchBatch(b.map(k => k.split(',').map(Number)));
+            if (r) b.forEach((k, j) => elevCache.set(k, r[j]));
+            done++; if (onProgress) onProgress(done, batches.length);
+        }));
+    }
+    const elev = keys.map(k => elevCache.has(k) ? elevCache.get(k) : null);
+    return { elev, failed: elev.filter(v => v === null).length };
+}
+
+// --- POINT-TO-POINT LOS WITH FRESNEL + CLUTTER ---
+function profilePoints(lat1, lon1, lat2, lon2) {
+    const dist = getDistance(lat1, lon1, lat2, lon2);
+    const n = Math.min(200, Math.max(10, Math.ceil(dist * 1000 / 50) + 1));
+    const pts = [];
+    for (let i = 0; i < n; i++) { const t = i / (n - 1); pts.push([lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t]); }
+    return pts;
+}
+/** Returns {status:'clear'|'blocked'|'unknown', minClr: min clearance in F1 units} */
+function evalProfile(elevs, distKm, h1, h2, c) {
+    if (elevs.some(e => e === null)) return { status: 'unknown', minClr: NaN };
+    const n = elevs.length, Dm = distKm * 1000, lambda = 0.299792458 / c.freq;
+    const a = elevs[0] + h1, b = elevs[n - 1] + h2;
+    let minClr = Infinity;
+    for (let i = 1; i < n - 1; i++) {
+        const t = i / (n - 1), d1 = Dm * t, d2 = Dm - d1;
+        const line = a + (b - a) * t;
+        const bulge = d1 * d2 / (2 * K_FACTOR * EARTH_R_M);
+        const obstacle = elevs[i] + c.clutterH + bulge;
+        const f1 = Math.sqrt(lambda * d1 * d2 / Dm);
+        minClr = Math.min(minClr, (line - obstacle) / f1);
+    }
+    if (minClr === Infinity) minClr = 1;
+    return { status: minClr >= c.fresnel ? 'clear' : 'blocked', minClr };
+}
+
+// --- ASSIGNMENT ENGINE ---
+async function assignTUs() {
+    if (aps.length === 0 || tus.length === 0) return logMsg('Need at least 1 AP and 1 TU.', 'warn');
+    const c = readCfg();
+    const btn = $('btnAssign'); btn.disabled = true; btn.textContent = 'Evaluating links…';
+    try {
+        const maxTuSec = parseInt($('maxTuSector').value) || 16;
+        const maxTuAp = parseInt($('maxTuAp').value) || 32;
+        tus.forEach(tu => { tu.result = null; tu.reason = ''; tu._flags = new Set(); resetTuVisual(tu); });
+
+        // 1. Candidate links (range, sector, link budget both directions)
+        const radiusCache = {};
+        const cands = [];
+        for (const tu of tus) {
+            for (const ap of aps) {
+                const rk = ap.id + '|' + tu.ant;
+                if (!(rk in radiusCache)) radiusCache[rk] = mcsRadii(c, ap, tu.ant)[0].radiusKm;
+                const d = getDistance(ap.lat, ap.lng, tu.lat, tu.lng);
+                if (d > radiusCache[rk]) { tu._flags.add('range'); continue; }
+                const sec = findSector(ap, getBearing(ap.lat, ap.lng, tu.lat, tu.lng));
+                if (!sec) { tu._flags.add('sector'); continue; }
+                const ev = evalLink(c, ap, sec.s, tu.lat, tu.lng, tu.ant);
+                if (ev.mcsDl < 0 || ev.mcsUl < 0) { tu._flags.add(ev.mcsDl < 0 ? 'dl' : 'ul'); continue; }
+                cands.push({ tu, ap, s: sec.s, half: sec.diff < 0 ? 0 : 1, ev, los: { status: 'skipped', minClr: NaN } });
+            }
+        }
+
+        // 2. LoS: one batched, cached elevation request for every candidate profile
+        if (!c.skipLos && cands.length) {
+            btn.textContent = 'Fetching terrain…';
+            const offsets = [], all = [];
+            cands.forEach(k => { const pts = profilePoints(k.ap.lat, k.ap.lng, k.tu.lat, k.tu.lng); offsets.push([all.length, pts.length]); all.push(...pts); });
+            const { elev, failed } = await getElevations(all, (d, n) => btn.textContent = `Fetching terrain ${d}/${n}…`);
+            cands.forEach((k, i) => {
+                const [o, len] = offsets[i];
+                k.los = evalProfile(elev.slice(o, o + len), k.ev.d, k.ap.height, c.hCpe, c);
+            });
+            if (failed) logMsg(`Terrain data unavailable for ${failed} profile points. Affected links are kept but flagged "LoS unverified".`, 'warn');
+        }
+        const viable = cands.filter(k => { if (k.los.status === 'blocked') { k.tu._flags.add('los'); return false; } return true; });
+
+        // 3. Best-server ordering: highest DL MCS, then best SINR/SNR, then nearest
+        const q = k => c.interf ? k.ev.sinrDl : k.ev.snrDl;
+        viable.sort((a, b) => (b.ev.mcsDl - a.ev.mcsDl) || (q(b) - q(a)) || (a.ev.d - b.ev.d));
+
+        // 4. Greedy assignment under sector/AP limits
+        const apCounts = {}, secCounts = {}, groups = {};
+        let assigned = 0;
+        for (const k of viable) {
+            if (k.tu.result) continue;
+            const sk = k.ap.id + '_' + k.s;
+            secCounts[sk] = secCounts[sk] || 0; apCounts[k.ap.id] = apCounts[k.ap.id] || 0;
+            if (secCounts[sk] >= maxTuSec || apCounts[k.ap.id] >= maxTuAp) { k.tu._flags.add('cap'); continue; }
+            const ch = k.ap.channels[k.s];
+            k.tu.result = { apId: k.ap.id, s: k.s, half: k.half, ch, ev: k.ev, los: k.los, cfg: c, peak: phyRate(c.bw, k.ev.mcsDl, c.gi) * c.streams };
+            const gk = `${k.ap.id}_${k.s}_${k.half}`;
+            (groups[gk] = groups[gk] || []).push(k.tu);
+            secCounts[sk]++; apCounts[k.ap.id]++; assigned++;
+            const col = chColor(ch);
+            tuLines[k.tu.id] = L.polyline([[k.ap.lat, k.ap.lng], [k.tu.lat, k.tu.lng]],
+                { color: col, weight: 2, dashArray: k.los.status === 'unknown' ? '6,5' : null, renderer: canvasRenderer }).addTo(map);
+            tuMarkers[k.tu.id].setStyle({ color: k.los.status === 'unknown' ? '#b26a00' : col, fillColor: col });
+        }
+
+        // 5. Airtime fairness per half-beam group
+        Object.values(groups).forEach(members => members.forEach(tu => {
+            tu.result.groupSize = members.length;
+            tu.result.avg = tu.result.peak * c.macEff / members.length;
+            renderTuLabel(tu);
+        }));
+
+        // 6. Reasons for unassigned TUs
+        const reasonText = { cap: 'Sector/AP capacity limit reached', los: `Terrain/clutter blocks ${Math.round(c.fresnel * 100)}% of the first Fresnel zone`, dl: 'Downlink does not close at MCS 0', ul: 'Uplink does not close at MCS 0', sector: 'Outside all sector beamwidths', range: 'Out of range of every AP' };
+        const tally = {};
+        tus.forEach(tu => {
+            if (tu.result) return;
+            const key = ['cap', 'los', 'dl', 'ul', 'sector', 'range'].find(f => tu._flags.has(f)) || 'range';
+            tu.reason = reasonText[key]; tally[reasonText[key]] = (tally[reasonText[key]] || 0) + 1;
+        });
+
+        const unverified = tus.filter(t => t.result && t.result.los.status === 'unknown').length;
+        logMsg(`Assignment complete. Assigned ${assigned}/${tus.length} TUs.${unverified ? ` ${unverified} with LoS unverified.` : ''}`);
+        Object.entries(tally).forEach(([r, n]) => logMsg(`  Unassigned (${n}): ${r}`, 'warn'));
+        clearStale('btnAssign');
+    } catch (e) {
+        logMsg('Assignment failed: ' + e.message, 'error'); console.error(e);
+    } finally {
+        btn.disabled = false; btn.textContent = '2. Run smart assignment';
+    }
+}
+
+// --- COVERAGE SWEEP ---
+async function calculateCoverage() {
+    if (aps.length === 0) return;
+    const c = readCfg();
+    const btn = $('btnCoverage'); btn.disabled = true; btn.textContent = 'Processing sweep…';
+    try {
+        Object.keys(apCoverageLayers).forEach(id => { apCoverageLayers[id].forEach(l => map.removeLayer(l)); apCoverageLayers[id] = []; });
+        const SAMPLES = 40, STEP = 2;
+        let totalUnknown = 0;
+        for (const ap of aps) {
+            const layers = apCoverageLayers[ap.id];
+            const maxR = mcsRadii(c, ap, c.tuAnt)[0].radiusKm;
+            if (!(maxR > 0)) { logMsg(`${ap.name}: link does not close at MCS 0 with current settings.`, 'warn'); continue; }
+            const start0 = ap.baseAzimuth - (ap.numSectors * ap.sectorBeamwidth) / 2;
+
+            // Build rays per sector
+            const sectors = [];
+            for (let s = 0; s < ap.numSectors; s++) {
+                const a0 = start0 + s * ap.sectorBeamwidth, a1 = a0 + ap.sectorBeamwidth;
+                const angles = []; for (let a = a0; a < a1 - 1e-9; a += STEP) angles.push(a); angles.push(a1);
+                const rays = angles.map(ang => Array.from({ length: SAMPLES }, (_, i) => getDestination(ap.lat, ap.lng, Math.max(0.001, i / (SAMPLES - 1) * maxR), ang)));
+                sectors.push({ s, a0, a1, rays });
+                const line = (ang, style) => layers.push(L.polyline([[ap.lat, ap.lng], [getDestination(ap.lat, ap.lng, maxR, ang).lat, getDestination(ap.lat, ap.lng, maxR, ang).lng]], { ...style, renderer: canvasRenderer }).addTo(map));
+                if (s === 0) line(a0, { color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8 });
+                line(a1, { color: '#222', weight: 1.5, dashArray: '4,4', opacity: 0.8 });
+                line((a0 + a1) / 2, { color: '#555', weight: 1, dashArray: '2,6', opacity: 0.5 });
+            }
+
+            // Terrain (one batched request per AP)
+            let elevOf = null;
+            if (!c.skipLos) {
+                const pts = sectors.flatMap(sec => sec.rays.flatMap(r => r.map(p => [p.lat, p.lng])));
+                const { elev, failed } = await getElevations(pts, (d, n) => btn.textContent = `${ap.name}: terrain ${d}/${n}…`);
+                totalUnknown += failed;
+                let idx = 0; const map2 = new Map();
+                sectors.forEach(sec => sec.rays.forEach(r => r.forEach(p => map2.set(p, elev[idx++]))));
+                elevOf = p => map2.get(p);
+            }
+
+            // Evaluate cells
+            btn.textContent = `${ap.name}: computing ${c.interf ? 'SINR' : 'SNR'}…`;
+            for (const sec of sectors) {
+                for (let r = 0; r < sec.rays.length - 1; r++) {
+                    const ray = sec.rays[r], next = sec.rays[r + 1];
+                    let unknown = false, tanMax = -Infinity, apTop = 0;
+                    if (elevOf) { const e0 = elevOf(ray[0]); if (e0 === null) unknown = true; else apTop = e0 + ap.height; }
+                    for (let i = 1; i < SAMPLES; i++) {
+                        const p = ray[i];
+                        let visible = true;
+                        if (elevOf && !unknown) {
+                            const e = elevOf(p);
+                            if (e === null) unknown = true;
+                            else {
+                                const dM = i / (SAMPLES - 1) * maxR * 1000;
+                                const drop = dM * dM / (2 * K_FACTOR * EARTH_R_M);      // curvature lowers distant points
+                                visible = (e + c.hCpe - drop - apTop) / dM >= tanMax;     // CPE vs. current horizon
+                                const blk = (e + c.clutterH - drop - apTop) / dM;          // this cell as a blocker
+                                if (blk > tanMax) tanMax = blk;
+                            }
+                        }
+                        const poly = [ray[i - 1], p, next[i], next[i - 1]];
+                        if (unknown) {
+                            layers.push(L.polygon(poly, { color: '#9e9e9e', stroke: false, fillOpacity: 0.35, interactive: false, renderer: canvasRenderer }).addTo(map));
+                            continue;
+                        }
+                        if (!visible) continue;
+                        const ev = evalLink(c, ap, sec.s, p.lat, p.lng, c.tuAnt);
+                        if (ev.mcsDl < 0) continue;
+                        layers.push(L.polygon(poly, { color: MCS_TABLE[ev.mcsDl].color, stroke: false, fillOpacity: 0.55, interactive: false, renderer: canvasRenderer }).addTo(map));
+                    }
+                }
+            }
+        }
+        if (totalUnknown) logMsg(`Terrain data unavailable for ${totalUnknown} sweep points (shown grey).`, 'warn');
+        logMsg(`Coverage sweep complete (${c.interf ? 'DL SINR' : 'DL SNR'}, TU antenna ${TU_ANTENNAS[c.tuAnt].short}).`);
+        clearStale('btnCoverage');
+    } catch (e) {
+        logMsg('Coverage sweep failed: ' + e.message, 'error'); console.error(e);
+    } finally {
+        btn.textContent = '1. Generate coverage sweep'; btn.disabled = aps.length === 0;
+    }
+}
+
+// --- CSV EXPORT ---
+function exportCsv() {
+    if (!tus.length) return logMsg('No TUs to export.', 'warn');
+    const head = ['TU', 'Lat', 'Lng', 'Antenna', 'AP', 'Sector', 'Half', 'Channel', 'Dist_km', 'LoS', 'DL_RSL_dBm', 'DL_SNR_dB', 'DL_SINR_dB', 'I_over_N_dB', 'DL_MCS', 'UL_SNR_dB', 'UL_MCS', 'Group', 'Peak_Mbps', 'Avg_Mbps', 'Note'];
+    const rows = tus.map(tu => {
+        const r = tu.result, e = r && r.ev, ap = r && aps.find(a => a.id === r.apId);
+        return [tu.id, tu.lat.toFixed(6), tu.lng.toFixed(6), TU_ANTENNAS[tu.ant].short,
+            ap ? ap.name : '', r ? r.s + 1 : '', r ? (r.half ? 'R' : 'L') : '', r ? r.ch : '', e ? e.d.toFixed(3) : '', r ? r.los.status : '',
+            e ? e.rslDl.toFixed(1) : '', e ? e.snrDl.toFixed(1) : '', e && r.cfg.interf ? e.sinrDl.toFixed(1) : '', e && isFinite(e.iOverN) ? e.iOverN.toFixed(1) : '',
+            e ? e.mcsDl : '', e ? e.snrUl.toFixed(1) : '', e ? e.mcsUl : '', r ? r.groupSize : '', r ? r.peak.toFixed(1) : '', r ? r.avg.toFixed(1) : '', r ? '' : tu.reason]
+            .map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+    });
+    const blob = new Blob([head.join(',') + '\n' + rows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ptmp_assignment.csv';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+updateAll();
+// =====================================================================
+//  LINK CALCULATOR (port of the Streamlit Wi-Fi 7 mmWave calculator)
+// =====================================================================
+const CALC_ANTENNAS = {
+    ap60:  { label: 'AP 60° sector (5 dBi patch, 32 elements)', gain: () => 5 + 10 * Math.log10(32) },
+    ap90:  { label: 'AP 90° sector (6 dBi patch, 16 elements)', gain: () => 6 + 10 * Math.log10(16) },
+    tu30:  { label: 'TU 30° (8 clusters of 2×2 patches)', gain: () => 20 },
+    tu45:  { label: 'TU 45° (8 clusters of 2×1 patches)', gain: () => 17 },
+    dish1: { label: '1 ft fixed dish', gain: (f, eff) => dishGain(1, f, eff), dish: true },
+    dish2: { label: '2 ft fixed dish', gain: (f, eff) => dishGain(2, f, eff), dish: true },
+    custom:{ label: 'Custom gain', gain: null }
+};
+const CALC_AVAILS = [99, 99.5, 99.9, 99.95, 99.99, 99.995];
+const SERIES_COLORS = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728', '#9467bd', '#8c564b'];
+
+fillSelect($('cRainZone'), [...Object.entries(RAIN_ZONES).map(([z, r]) => [z, `${z} (${r} mm/h)`]), ['custom', 'Custom']], 'K');
+fillSelect($('cBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 140);
+fillSelect($('cTxPreset'), Object.entries(CALC_ANTENNAS).filter(([k]) => !k.startsWith('dish')).map(([k, a]) => [k, a.label]), 'ap60');
+fillSelect($('cRxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'tu30');
+$('cRainZone').addEventListener('change', () => syncRainRate('cRainZone', 'cRainRate'));
+
+function syncCalcGains() {
+    const f = num('cFreq') || 31, eff = (num('cDishEff') || 55) / 100;
+    [['cTxPreset', 'cTxGain'], ['cRxPreset', 'cRxGain']].forEach(([sel, inp]) => {
+        const a = CALC_ANTENNAS[$(sel).value];
+        if (a.gain) { $(inp).readOnly = true; $(inp).value = a.gain(f, eff).toFixed(2); }
+        else { $(inp).readOnly = false; if ($(inp).value === '') $(inp).value = 20; }
+    });
+}
+
+function readCalc() {
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const rxKey = $('cRxPreset').value;
+    const md = num('cMaxDist');
+    return {
+        freq: clamp(num('cFreq') || 31, 1, 52), pol: $('cPol').value, rainR: Math.max(0, num('cRainRate') || 0), rho: Math.max(0, num('cRho') || 0),
+        bw: parseInt($('cBw').value), gi: num('cGi'), maxMcs: clamp(Math.round(num('cMaxMcs')), 0, 13), margin: num('cMargin') || 0,
+        txPower: num('cTxPower'), txGain: num('cTxGain'), rxGain: num('cRxGain'), nf: num('cNf'),
+        streams: Math.max(1, Math.round(num('cStreams')) || 1), macEff: clamp(num('cMacEff') || 100, 1, 100) / 100,
+        avail: clamp(num('cAvail') || 99.9, 99, 99.999), dist: Math.max(0.01, num('cDist') || 1),
+        maxDist: md > 0 ? md : (CALC_ANTENNAS[rxKey].dish ? 10 : 2)
+    };
+}
+
+function calcPath(k, d, avail) {
+    const fs = fspl(d, k.freq), gas = gasSpecific(k.freq, k.rho) * d, rain = avail == null ? 0 : rainLoss(k.freq, k.pol, k.rainR, d, avail);
+    const L = fs + gas + rain;
+    return { fs, gas, rain, L, rsl: k.txPower + k.txGain + k.rxGain - L };
+}
+function calcCapacityAt(k, d, avail, bw = k.bw) {
+    const { rsl } = calcPath(k, d, avail);
+    let best = 0;
+    for (let m = 0; m <= k.maxMcs; m++) if (rsl - thresholdRsl(bw, m, k.nf) >= k.margin) best = Math.max(best, phyRate(bw, m, k.gi));
+    return best * k.streams * k.macEff;
+}
+function calcMaxDistance(k, mcs, bw, avail) {
+    const ok = d => calcPath(k, d, avail).rsl - thresholdRsl(bw, mcs, k.nf) >= k.margin;
+    let lo = 0.001, hi = 50;
+    if (!ok(lo)) return 0;
+    if (ok(hi)) return Infinity;
+    for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (ok(mid)) lo = mid; else hi = mid; }
+    return lo;
+}
+
+function niceTicks(max, count = 6) {
+    if (!(max > 0)) return [0, 1];
+    const raw = max / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(s => s * mag).find(s => raw <= s);
+    const ticks = []; for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(+v.toFixed(10));
+    if (ticks[ticks.length - 1] < max) ticks.push(+(ticks[ticks.length - 1] + step).toFixed(10));
+    return ticks;
+}
+
+function drawChart(xs, series, xLabel, yLabel) {
+    const box = $('chartBox');
+    const W = 860, H = 380, P = { l: 64, r: 16, t: 14, b: 44 };
+    const xMax = xs[xs.length - 1];
+    const yMaxRaw = Math.max(1, ...series.flatMap(s => s.ys));
+    const xt = niceTicks(xMax), yt = niceTicks(yMaxRaw);
+    const xM = xt[xt.length - 1], yM = yt[yt.length - 1];
+    const X = v => P.l + (v / xM) * (W - P.l - P.r), Y = v => H - P.b - (v / yM) * (H - P.t - P.b);
+    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Capacity versus distance chart">`;
+    yt.forEach(v => s += `<line x1="${P.l}" x2="${W - P.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="#e5e7eb"/><text x="${P.l - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="#555">${v}</text>`);
+    xt.forEach(v => s += `<line x1="${X(v)}" x2="${X(v)}" y1="${P.t}" y2="${H - P.b}" stroke="#f0f1f3"/><text x="${X(v)}" y="${H - P.b + 16}" font-size="11" text-anchor="middle" fill="#555">${v}</text>`);
+    s += `<line x1="${P.l}" x2="${W - P.r}" y1="${H - P.b}" y2="${H - P.b}" stroke="#888"/><line x1="${P.l}" x2="${P.l}" y1="${P.t}" y2="${H - P.b}" stroke="#888"/>`;
+    s += `<text x="${(P.l + W - P.r) / 2}" y="${H - 6}" font-size="12" text-anchor="middle" fill="#333">${xLabel}</text>`;
+    s += `<text transform="translate(16 ${(P.t + H - P.b) / 2}) rotate(-90)" font-size="12" text-anchor="middle" fill="#333">${yLabel}</text>`;
+    series.forEach(se => {
+        // step-like path (capacity is piecewise constant)
+        let d = '';
+        se.ys.forEach((y, i) => { d += (i ? 'L' : 'M') + X(xs[i]).toFixed(1) + ' ' + Y(y).toFixed(1) + ' '; });
+        s += `<path d="${d}" fill="none" stroke="${se.color}" stroke-width="2"/>`;
+    });
+    s += `<line id="chCross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" stroke="#333" stroke-dasharray="3,3" visibility="hidden"/>`;
+    s += `<rect id="chHit" x="${P.l}" y="${P.t}" width="${W - P.l - P.r}" height="${H - P.t - P.b}" fill="transparent"/></svg>`;
+    box.innerHTML = s + '<div id="chartTip"></div>';
+    $('chartLegend').innerHTML = series.map(se => `<span><i style="background:${se.color}"></i>${se.name}</span>`).join('');
+
+    const svg = box.querySelector('svg'), tip = $('chartTip'), cross = $('chCross');
+    const hit = $('chHit');
+    hit.addEventListener('mousemove', ev => {
+        const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+        const sp = pt.matrixTransform(svg.getScreenCTM().inverse());
+        const xv = (sp.x - P.l) / (W - P.l - P.r) * xM;
+        let i = 0, bestD = Infinity; xs.forEach((x, j) => { const dd = Math.abs(x - xv); if (dd < bestD) { bestD = dd; i = j; } });
+        cross.setAttribute('x1', X(xs[i])); cross.setAttribute('x2', X(xs[i])); cross.setAttribute('visibility', 'visible');
+        tip.innerHTML = `<b>${xs[i].toFixed(2)} km</b><br>` + series.map(se => `<span style="color:${se.color}">■</span> ${se.name}: ${se.ys[i].toFixed(0)} Mbps`).join('<br>');
+        tip.style.display = 'block';
+        const r = box.getBoundingClientRect();
+        let left = ev.clientX - r.left + 14; if (left > r.width - 170) left = ev.clientX - r.left - 170;
+        tip.style.left = left + 'px'; tip.style.top = Math.max(0, ev.clientY - r.top - 20) + 'px';
+    });
+    hit.addEventListener('mouseleave', () => { tip.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
+}
+
+function runCalc() {
+    syncCalcGains();
+    const k = readCalc();
+    const bws = Object.keys(BW_TONES).map(Number);
+
+    // Link budget at chosen distance
+    const p = calcPath(k, k.dist, k.avail), clear = calcPath(k, k.dist, null);
+    const noise = noiseDbm(k.bw, k.nf), snr = p.rsl - noise;
+    const mcs = bestMcs(snr, k.maxMcs, k.margin);
+    const rows = [
+        ['Tx power', `${k.txPower.toFixed(2)} dBm`], ['Tx antenna gain', `${k.txGain.toFixed(2)} dBi`], ['EIRP', `${(k.txPower + k.txGain).toFixed(2)} dBm`],
+        ['Rx antenna gain', `${k.rxGain.toFixed(2)} dBi`],
+        ['Free-space loss', `${p.fs.toFixed(2)} dB`], [`Gaseous loss (${gasSpecific(k.freq, k.rho).toFixed(3)} dB/km)`, `${p.gas.toFixed(2)} dB`],
+        [`Rain loss @ ${k.avail}% (γ0.01 = ${rainGamma(k.freq, k.pol, k.rainR).toFixed(2)} dB/km)`, `${p.rain.toFixed(2)} dB`],
+        ['Total path loss', `${p.L.toFixed(2)} dB`, 'total'],
+        ['RSL', `${p.rsl.toFixed(2)} dBm`, 'total'], ['Noise floor', `${noise.toFixed(2)} dBm`], ['SNR', `${snr.toFixed(2)} dB`, 'total'],
+        ['Achieved MCS (with margin)', mcs >= 0 ? `${mcs} (${MCS_TABLE[mcs].mod})` : 'Link does not close'],
+        ['Fade margin over threshold', mcs >= 0 ? `${(p.rsl - thresholdRsl(k.bw, mcs, k.nf)).toFixed(2)} dB` : '–'],
+        ['System gain at that MCS', mcs >= 0 ? `${(k.txPower - thresholdRsl(k.bw, mcs, k.nf)).toFixed(2)} dB` : '–'],
+        ['PHY rate', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams).toFixed(1)} Mbps (${k.streams} streams)` : '0'],
+        ['User throughput', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams * k.macEff).toFixed(1)} Mbps` : '0', 'total'],
+        ['Clear-sky RSL / SNR (no rain)', `${clear.rsl.toFixed(1)} dBm / ${(clear.rsl - noise).toFixed(1)} dB`]
+    ];
+    $('budgetTable').innerHTML = rows.map(([a, b, cls]) => `<tr class="${cls || ''}"><td>${a}</td><td>${b}</td></tr>`).join('');
+
+    // PHY table for selected BW
+    $('phyTable').innerHTML = `<tr><th>MCS</th><th>Modulation</th><th>SNR req. (dB)</th><th>Threshold RSL (dBm)</th><th>PHY / stream (Mbps)</th></tr>` +
+        MCS_TABLE.slice(0, k.maxMcs + 1).map(m => `<tr${m.mcs === mcs ? ' class="hl"' : ''}><td>${m.mcs}</td><td>${m.mod}</td><td>${m.snr}</td><td>${thresholdRsl(k.bw, m.mcs, k.nf).toFixed(1)}</td><td>${phyRate(k.bw, m.mcs, k.gi).toFixed(1)}</td></tr>`).join('');
+
+    // Chart
+    const N = 200, xs = Array.from({ length: N }, (_, i) => 0.1 + (k.maxDist - 0.1) * i / (N - 1));
+    const series = CALC_AVAILS.map((a, i) => ({ name: `${a}%`, color: SERIES_COLORS[i], ys: xs.map(d => calcCapacityAt(k, d, a)) }));
+    $('chartTitle').textContent = `Capacity vs. distance: ${k.freq} GHz, rain ${$('cRainZone').value === 'custom' ? 'custom' : 'zone ' + $('cRainZone').value} (${k.rainR} mm/h), ${k.bw} MHz, max MCS ${k.maxMcs}`;
+    drawChart(xs, series, 'Distance (km)', `User capacity (Mbps), ${k.streams} streams, ${Math.round(k.macEff * 100)}% eff.`);
+
+    // Table 1: max distance per MCS x BW
+    $('t1Title').textContent = `Maximum distance (km) at ${k.avail}% availability`;
+    $('distTable').innerHTML = `<tr><th>MCS</th>${bws.map(b => `<th>${b} MHz</th>`).join('')}</tr>` +
+        MCS_TABLE.slice(0, k.maxMcs + 1).map(m => `<tr><td>${m.mcs} <span style="color:#888">${m.mod}</span></td>${bws.map(b => {
+            const d = calcMaxDistance(k, m.mcs, b, k.avail);
+            return `<td class="${d === 0 ? 'zero' : ''}">${d === Infinity ? '> 50' : d.toFixed(2)}</td>`;
+        }).join('')}</tr>`).join('');
+
+    // Table 2: capacity per MCS x BW
+    $('t2Title').textContent = `User capacity per MCS and bandwidth (Mbps): ${k.streams} streams, ${Math.round(k.macEff * 100)}% efficiency, GI ${k.gi} µs`;
+    $('capTable').innerHTML = `<tr><th>MCS</th>${bws.map(b => `<th>${b} MHz</th>`).join('')}</tr>` +
+        MCS_TABLE.slice(0, k.maxMcs + 1).map(m => `<tr><td>${m.mcs} <span style="color:#888">${m.mod}</span></td>${bws.map(b => `<td>${(phyRate(b, m.mcs, k.gi) * k.streams * k.macEff).toFixed(2)}</td>`).join('')}</tr>`).join('');
+}
+
+let calcTimer = null;
+document.querySelectorAll('.c').forEach(el => el.addEventListener('input', () => { clearTimeout(calcTimer); calcTimer = setTimeout(runCalc, 150); }));
+document.querySelectorAll('.c').forEach(el => el.addEventListener('change', () => { clearTimeout(calcTimer); calcTimer = setTimeout(runCalc, 50); }));
+
+// --- VIEW SWITCHING ---
+let calcReady = false;
+function showView(id) {
+    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === id));
+    if (id === 'planner') setTimeout(() => map.invalidateSize(), 50);
+    if (id === 'calcView' && !calcReady) { calcReady = true; runCalc(); }
+}
+</script>
+</body>
+</html>
