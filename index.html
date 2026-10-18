@@ -120,6 +120,10 @@
     .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin-top: 6px; }
     .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
     .chart-legend i { width: 18px; height: 3px; display: inline-block; }
+    .hp-card { border-left: 4px solid var(--blue); }
+    .hp-main { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .hp-num { font-size: 28px; font-weight: bold; color: #1f2933; font-variant-numeric: tabular-nums; }
+    .hp-sub { font-size: 13px; color: #555; }
     .model-note { font-size: 11px; color: var(--muted); line-height: 1.4; max-width: 1100px; }
 
     @media (max-width: 900px) {
@@ -225,7 +229,16 @@
                     <div class="form-group"><label for="fresnelPct">Fresnel clearance (% F1)</label><input class="g" type="number" id="fresnelPct" value="60" min="0" max="100"></div>
                     <div class="form-group"><label for="clutterH">Clutter height (m)</label><input class="g" type="number" id="clutterH" value="0" min="0"></div>
                 </div>
-                <div class="hint warn-note">Elevation data is a bare-earth model (Copernicus 90 m / SRTM). Buildings and trees are not in it, so set a clutter height for urban areas. Paths with missing elevation data are flagged “LoS unverified”, not treated as clear.</div>
+                <div class="form-group"><label for="sweepRes">Sweep resolution</label>
+                    <select class="g" id="sweepRes">
+                        <option value="fine">Fine: 2° rays, 40 samples</option>
+                        <option value="normal" selected>Normal: 3° rays, 30 samples</option>
+                        <option value="coarse">Coarse: 5° rays, 20 samples</option>
+                    </select></div>
+                <div class="form-group"><label for="demFiles">Local DEM tiles (SRTM .hgt, e.g. N32E034.hgt)</label>
+                    <input type="file" id="demFiles" accept=".hgt" multiple style="font-size:11px;width:100%;" onchange="loadDemFiles(this.files)">
+                    <div class="hint" id="demStatus" style="margin-top:4px;">No local tiles loaded: using online APIs.</div></div>
+                <div class="hint warn-note">Elevation data is a bare-earth model (SRTM / Copernicus). Free online APIs are rate-limited, so load local .hgt tiles for large sweeps. Buildings and trees are not in it, so set a clutter height for urban areas. Paths with missing elevation data are flagged “LoS unverified”, not treated as clear.</div>
             </div>
         </details>
 
@@ -349,6 +362,12 @@
     </aside>
 
     <div id="calcResults">
+        <div class="calc-card hp-card">
+            <h3>Half-peak range at 99.9% availability</h3>
+            <div class="hp-main"><span id="hpDist" class="hp-num">–</span><span id="hpSub" class="hp-sub"></span></div>
+            <div class="table-wrap"><table class="data" id="hpTable"></table></div>
+            <p class="hint" style="margin:8px 0 0;">Definition: the longest distance at which the link, at 99.9% availability, still delivers at least half of its peak capacity. Peak capacity = PHY rate at the max MCS × streams × MAC efficiency, at the same bandwidth and guard interval.</p>
+        </div>
         <div class="calc-grid">
             <div class="calc-card">
                 <h3>Link budget at <input class="c" type="number" id="cDist" value="1" min="0.01" step="0.1"> km</h3>
@@ -585,7 +604,8 @@ function readCfg() {
         rainOnInterf: $('rainOnInterf').checked,
         skipLos: $('skipLos').checked,
         fresnel: clamp(num('fresnelPct') || 0, 0, 100) / 100,
-        clutterH: Math.max(0, num('clutterH') || 0)
+        clutterH: Math.max(0, num('clutterH') || 0),
+        sweepRes: $('sweepRes').value
     };
 }
 
@@ -909,47 +929,147 @@ function mcsRadii(c, ap, antKey) {
     });
 }
 
-// --- ELEVATION (cached, batched, parallel, with explicit failure) ---
+// --- ELEVATION: local DEM tiles first, then rate-limited public APIs, persistent cache ---
+// Local SRTM .hgt tiles (1" = 3601², 3" = 1201²), big-endian int16, void = -32768
+const demTiles = [];
+async function loadDemFiles(fileList) {
+    let ok = 0;
+    for (const f of fileList) {
+        const m = f.name.match(/([NS])(\d{2})([EW])(\d{3})/i);
+        if (!m) { logMsg(`${f.name}: name must look like N32E034.hgt`, 'error'); continue; }
+        const buf = await f.arrayBuffer();
+        const n = Math.round(Math.sqrt(buf.byteLength / 2));
+        if (n * n * 2 !== buf.byteLength) { logMsg(`${f.name}: not a raw .hgt tile (unzip it first)`, 'error'); continue; }
+        const dv = new DataView(buf), data = new Int16Array(n * n);
+        for (let i = 0; i < n * n; i++) data[i] = dv.getInt16(i * 2, false);
+        const lat0 = (m[1].toUpperCase() === 'N' ? 1 : -1) * parseInt(m[2]);
+        const lon0 = (m[3].toUpperCase() === 'E' ? 1 : -1) * parseInt(m[4]);
+        const i = demTiles.findIndex(t => t.lat0 === lat0 && t.lon0 === lon0);
+        const tile = { lat0, lon0, n, data, name: f.name };
+        if (i >= 0) demTiles[i] = tile; else demTiles.push(tile);
+        ok++;
+    }
+    $('demStatus').textContent = demTiles.length
+        ? `Loaded: ${demTiles.map(t => `${t.name} (${t.n === 3601 ? '1″' : t.n === 1201 ? '3″' : t.n + '²'})`).join(', ')}`
+        : 'No local tiles loaded: using online APIs.';
+    if (ok) { logMsg(`Loaded ${ok} DEM tile(s). Terrain inside them no longer needs the online APIs.`); markStale(); }
+}
+function demElevation(lat, lng) {
+    for (const t of demTiles) {
+        if (lat < t.lat0 || lat > t.lat0 + 1 || lng < t.lon0 || lng > t.lon0 + 1) continue;
+        const n = t.n, y = (t.lat0 + 1 - lat) * (n - 1), x = (lng - t.lon0) * (n - 1);
+        const x0 = Math.min(n - 2, Math.floor(x)), y0 = Math.min(n - 2, Math.floor(y)), fx = x - x0, fy = y - y0;
+        const v = (r, c) => t.data[r * n + c];
+        const q = [v(y0, x0), v(y0, x0 + 1), v(y0 + 1, x0), v(y0 + 1, x0 + 1)];
+        if (q.some(e => e === -32768)) { const good = q.filter(e => e !== -32768); return good.length ? good.reduce((a, b) => a + b) / good.length : null; }
+        return (q[0] * (1 - fx) + q[1] * fx) * (1 - fy) + (q[2] * (1 - fx) + q[3] * fx) * fy;
+    }
+    return undefined; // not covered
+}
+
+// Online cache, quantised to ~50 m (finer than the 90 m / 30 m DEMs behind the APIs)
+const GRID = 0.0005;
 const elevCache = new Map();
-const ekey = (lat, lng) => lat.toFixed(5) + ',' + lng.toFixed(5);
-async function fetchJson(url, opts = {}, ms = 8000) {
+const ekey = (lat, lng) => (Math.round(lat / GRID) * GRID).toFixed(4) + ',' + (Math.round(lng / GRID) * GRID).toFixed(4);
+const CACHE_KEY = 'ptmpElevCacheV2';
+try { const s = localStorage.getItem(CACHE_KEY); if (s) Object.entries(JSON.parse(s)).forEach(([k, v]) => elevCache.set(k, v)); } catch (e) { /* storage unavailable */ }
+let saveTimer = null;
+function persistCache() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+        try {
+            let entries = [...elevCache.entries()];
+            if (entries.length > 250000) entries = entries.slice(-250000);
+            localStorage.setItem(CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+        } catch (e) { /* quota or storage unavailable */ }
+    }, 500);
+}
+
+async function fetchJson(url, opts = {}, ms = 10000) {
     const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
-    try { const r = await fetch(url, { ...opts, signal: ctl.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+    try { const r = await fetch(url, { ...opts, signal: ctl.signal }); if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; } return await r.json(); }
     finally { clearTimeout(t); }
 }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Free-tier limits: OpenTopoData 1 call/s, 100 pts/call, 1000 calls/day.
+// Open-Meteo weights multi-point calls per coordinate: 600/min, 5000/h, 10000/day -> keep under 500 pts/min.
 const ELEV_PROVIDERS = [
-    { name: 'Open-Meteo', run: async pts => (await fetchJson(`https://api.open-meteo.com/v1/elevation?latitude=${pts.map(p => p[0]).join(',')}&longitude=${pts.map(p => p[1]).join(',')}`)).elevation },
-    { name: 'OpenTopoData', run: async pts => (await fetchJson(`https://api.opentopodata.org/v1/srtm30m?locations=${pts.map(p => p.join(',')).join('|')}`)).results.map(r => r.elevation == null ? 0 : r.elevation) },
-    { name: 'Open-Elevation', run: async pts => (await fetchJson('https://api.open-elevation.com/api/v1/lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locations: pts.map(p => ({ latitude: p[0], longitude: p[1] })) }) })).results.map(r => r.elevation) }
+    { name: 'OpenTopoData', minGapMs: 1100, ptsPerMin: Infinity,
+      run: async pts => (await fetchJson(`https://api.opentopodata.org/v1/srtm30m?locations=${pts.map(p => p.join(',')).join('|')}`)).results.map(r => r.elevation == null ? 0 : r.elevation) },
+    { name: 'Open-Meteo', minGapMs: 200, ptsPerMin: 500,
+      run: async pts => (await fetchJson(`https://api.open-meteo.com/v1/elevation?latitude=${pts.map(p => p[0]).join(',')}&longitude=${pts.map(p => p[1]).join(',')}`)).elevation },
+    { name: 'Open-Elevation', minGapMs: 1000, ptsPerMin: Infinity,
+      run: async pts => (await fetchJson('https://api.open-elevation.com/api/v1/lookup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locations: pts.map(p => ({ latitude: p[0], longitude: p[1] })) }) })).results.map(r => r.elevation) }
 ];
-let preferredProvider = 0;
-async function fetchBatch(pts) {
-    for (let k = 0; k < ELEV_PROVIDERS.length; k++) {
-        const idx = (preferredProvider + k) % ELEV_PROVIDERS.length;
+ELEV_PROVIDERS.forEach(p => { p.last = 0; p.win = []; p.until = 0; p.fails = 0; });
+let preferredProvider = 0, elevStats = { rateLimited: 0, errors: 0 };
+
+function providerWait(p, n, now) {
+    let w = Math.max(0, p.until - now, p.last + p.minGapMs - now);
+    if (isFinite(p.ptsPerMin)) {
+        p.win = p.win.filter(e => now - e.t < 60000);
+        const used = p.win.reduce((s, e) => s + e.n, 0);
+        if (used + n > p.ptsPerMin && p.win.length) w = Math.max(w, p.win[0].t + 60000 - now);
+    }
+    return w;
+}
+async function fetchBatch(pts, status) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const now = Date.now();
+        const order = ELEV_PROVIDERS.map((p, i) => ({ p, i, w: providerWait(p, pts.length, now) }))
+            .sort((a, b) => (a.w - b.w) || ((a.i === preferredProvider) ? -1 : (b.i === preferredProvider) ? 1 : 0));
+        const pick = order[0];
+        if (pick.w > 90000) return null;                 // everything blocked for a long time
+        if (pick.w > 0) { if (status) status(`waiting ${Math.ceil(pick.w / 1000)} s for ${pick.p.name} rate limit`); await sleep(pick.w); }
+        const p = pick.p;
+        p.last = Date.now(); if (isFinite(p.ptsPerMin)) p.win.push({ t: p.last, n: pts.length });
         try {
-            const r = await ELEV_PROVIDERS[idx].run(pts);
-            if (Array.isArray(r) && r.length === pts.length && r.every(v => typeof v === 'number' && isFinite(v))) { preferredProvider = idx; return r; }
-        } catch (e) { /* try next provider */ }
+            const r = await p.run(pts);
+            if (Array.isArray(r) && r.length === pts.length && r.every(v => typeof v === 'number' && isFinite(v))) { p.fails = 0; preferredProvider = pick.i; return r; }
+            throw new Error('bad response');
+        } catch (e) {
+            p.fails++;
+            if (e.status === 429) { elevStats.rateLimited++; p.until = Date.now() + 60000; }
+            else { elevStats.errors++; p.until = Date.now() + Math.min(120000, 5000 * Math.pow(2, p.fails - 1)); }
+        }
     }
     return null;
 }
-/** points: [[lat,lng],...] -> { elev: (number|null)[], failed: count of points without data } */
+/** points: [[lat,lng],...] -> { elev: (number|null)[], failed } */
 async function getElevations(points, onProgress) {
-    const keys = points.map(p => ekey(p[0], p[1]));
-    const missing = [...new Set(keys.filter(k => !elevCache.has(k)))];
-    const batches = [];
-    for (let i = 0; i < missing.length; i += 90) batches.push(missing.slice(i, i + 90));
-    let done = 0;
-    const CONCURRENCY = 3;
-    for (let i = 0; i < batches.length; i += CONCURRENCY) {
-        await Promise.all(batches.slice(i, i + CONCURRENCY).map(async b => {
-            const r = await fetchBatch(b.map(k => k.split(',').map(Number)));
-            if (r) b.forEach((k, j) => elevCache.set(k, r[j]));
-            done++; if (onProgress) onProgress(done, batches.length);
-        }));
+    const out = new Array(points.length);
+    const need = new Map(); // online key -> [lat,lng]
+    points.forEach((p, i) => {
+        const d = demTiles.length ? demElevation(p[0], p[1]) : undefined;
+        if (d !== undefined) { out[i] = d; return; }
+        const k = ekey(p[0], p[1]); out[i] = k;
+        if (!elevCache.has(k) && !need.has(k)) need.set(k, k.split(',').map(Number));
+    });
+    const keys = [...need.keys()], batches = [];
+    for (let i = 0; i < keys.length; i += 100) batches.push(keys.slice(i, i + 100));
+    elevStats = { rateLimited: 0, errors: 0 };
+    let done = 0, gaveUp = false;
+    for (const b of batches) {
+        if (gaveUp) break;
+        const r = await fetchBatch(b.map(k => need.get(k)), msg => onProgress && onProgress(done, batches.length, msg));
+        if (r) { b.forEach((k, j) => elevCache.set(k, r[j])); persistCache(); } else gaveUp = true;
+        done++; if (onProgress) onProgress(done, batches.length);
     }
-    const elev = keys.map(k => elevCache.has(k) ? elevCache.get(k) : null);
-    return { elev, failed: elev.filter(v => v === null).length };
+    const elev = out.map(v => typeof v === 'string' ? (elevCache.has(v) ? elevCache.get(v) : null) : v);
+    const failed = elev.filter(v => v === null).length;
+    if (failed) logMsg(`Terrain: ${failed} points without data (${elevStats.rateLimited} rate-limited, ${elevStats.errors} failed calls${gaveUp ? '; stopped early' : ''}). Run again to fetch the rest from cache + API, or load local DEM tiles.`, 'warn');
+    return { elev, failed };
+}
+/** Linearly fill runs of up to maxGap missing samples between known neighbours */
+function fillGaps(arr, maxGap = 3) {
+    const a = arr.slice();
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== null) continue;
+        let j = i; while (j < a.length && a[j] === null) j++;
+        if (i > 0 && j < a.length && j - i <= maxGap) for (let k = i; k < j; k++) a[k] = a[i - 1] + (a[j] - a[i - 1]) * (k - i + 1) / (j - i + 1);
+        i = j;
+    }
+    return a;
 }
 
 // --- POINT-TO-POINT LOS WITH FRESNEL + CLUTTER ---
@@ -1010,10 +1130,10 @@ async function assignTUs() {
             btn.textContent = 'Fetching terrain…';
             const offsets = [], all = [];
             cands.forEach(k => { const pts = profilePoints(k.ap.lat, k.ap.lng, k.tu.lat, k.tu.lng); offsets.push([all.length, pts.length]); all.push(...pts); });
-            const { elev, failed } = await getElevations(all, (d, n) => btn.textContent = `Fetching terrain ${d}/${n}…`);
+            const { elev, failed } = await getElevations(all, (d, n, msg) => btn.textContent = `Fetching terrain ${d}/${n}${msg ? ' (' + msg + ')' : ''}…`);
             cands.forEach((k, i) => {
                 const [o, len] = offsets[i];
-                k.los = evalProfile(elev.slice(o, o + len), k.ev.d, k.ap.height, c.hCpe, c);
+                k.los = evalProfile(fillGaps(elev.slice(o, o + len)), k.ev.d, k.ap.height, c.hCpe, c);
             });
             if (failed) logMsg(`Terrain data unavailable for ${failed} profile points. Affected links are kept but flagged "LoS unverified".`, 'warn');
         }
@@ -1076,7 +1196,8 @@ async function calculateCoverage() {
     const btn = $('btnCoverage'); btn.disabled = true; btn.textContent = 'Processing sweep…';
     try {
         Object.keys(apCoverageLayers).forEach(id => { apCoverageLayers[id].forEach(l => map.removeLayer(l)); apCoverageLayers[id] = []; });
-        const SAMPLES = 40, STEP = 2;
+        const RES = { fine: [40, 2], normal: [30, 3], coarse: [20, 5] }[c.sweepRes] || [30, 3];
+        const SAMPLES = RES[0], STEP = RES[1];
         let totalUnknown = 0;
         for (const ap of aps) {
             const layers = apCoverageLayers[ap.id];
@@ -1101,10 +1222,13 @@ async function calculateCoverage() {
             let elevOf = null;
             if (!c.skipLos) {
                 const pts = sectors.flatMap(sec => sec.rays.flatMap(r => r.map(p => [p.lat, p.lng])));
-                const { elev, failed } = await getElevations(pts, (d, n) => btn.textContent = `${ap.name}: terrain ${d}/${n}…`);
-                totalUnknown += failed;
+                const { elev } = await getElevations(pts, (d, n, msg) => btn.textContent = `${ap.name}: terrain ${d}/${n}${msg ? ' (' + msg + ')' : ''}…`);
                 let idx = 0; const map2 = new Map();
-                sectors.forEach(sec => sec.rays.forEach(r => r.forEach(p => map2.set(p, elev[idx++]))));
+                sectors.forEach(sec => sec.rays.forEach(r => {
+                    const filled = fillGaps(r.map(() => elev[idx++]));
+                    totalUnknown += filled.filter(v => v === null).length;
+                    r.forEach((p, j) => map2.set(p, filled[j]));
+                }));
                 elevOf = p => map2.get(p);
             }
 
@@ -1142,7 +1266,7 @@ async function calculateCoverage() {
                 }
             }
         }
-        if (totalUnknown) logMsg(`Terrain data unavailable for ${totalUnknown} sweep points (shown grey).`, 'warn');
+        if (totalUnknown) logMsg(`${totalUnknown} sweep points still lack terrain (grey). Click the sweep again to fill them from the cache, or load .hgt tiles.`, 'warn');
         logMsg(`Coverage sweep complete (${c.interf ? 'DL SINR' : 'DL SNR'}, TU antenna ${TU_ANTENNAS[c.tuAnt].short}).`);
         clearStale('btnCoverage');
     } catch (e) {
@@ -1234,6 +1358,16 @@ function calcMaxDistance(k, mcs, bw, avail) {
     return lo;
 }
 
+const HALF_PEAK_AVAIL = 99.9;
+/** Half-peak range: longest distance at 99.9% availability with capacity >= peak/2 */
+function halfPeakRange(k, bw) {
+    const peak = phyRate(bw, k.maxMcs, k.gi) * k.streams * k.macEff;
+    let mHalf = k.maxMcs;
+    for (let m = 0; m <= k.maxMcs; m++) if (phyRate(bw, m, k.gi) >= phyRate(bw, k.maxMcs, k.gi) / 2 - 1e-9) { mHalf = m; break; }
+    const cap = phyRate(bw, mHalf, k.gi) * k.streams * k.macEff;
+    return { peak, mcs: mHalf, cap, dist: calcMaxDistance(k, mHalf, bw, HALF_PEAK_AVAIL) };
+}
+
 function niceTicks(max, count = 6) {
     if (!(max > 0)) return [0, 1];
     const raw = max / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -1243,7 +1377,7 @@ function niceTicks(max, count = 6) {
     return ticks;
 }
 
-function drawChart(xs, series, xLabel, yLabel) {
+function drawChart(xs, series, xLabel, yLabel, marker) {
     const box = $('chartBox');
     const W = 860, H = 380, P = { l: 64, r: 16, t: 14, b: 44 };
     const xMax = xs[xs.length - 1];
@@ -1263,6 +1397,11 @@ function drawChart(xs, series, xLabel, yLabel) {
         se.ys.forEach((y, i) => { d += (i ? 'L' : 'M') + X(xs[i]).toFixed(1) + ' ' + Y(y).toFixed(1) + ' '; });
         s += `<path d="${d}" fill="none" stroke="${se.color}" stroke-width="2"/>`;
     });
+    if (marker && marker.x > 0 && marker.x <= xM) {
+        s += `<line x1="${X(marker.x)}" x2="${X(marker.x)}" y1="${P.t}" y2="${H - P.b}" stroke="${marker.color}" stroke-width="1.5" stroke-dasharray="6,4"/>`;
+        s += `<line x1="${P.l}" x2="${X(marker.x)}" y1="${Y(marker.y)}" y2="${Y(marker.y)}" stroke="${marker.color}" stroke-width="1" stroke-dasharray="2,4"/>`;
+        s += `<text x="${X(marker.x) + 5}" y="${P.t + 12}" font-size="11" fill="${marker.color}">${marker.label}</text>`;
+    }
     s += `<line id="chCross" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" stroke="#333" stroke-dasharray="3,3" visibility="hidden"/>`;
     s += `<rect id="chHit" x="${P.l}" y="${P.t}" width="${W - P.l - P.r}" height="${H - P.t - P.b}" fill="transparent"/></svg>`;
     box.innerHTML = s + '<div id="chartTip"></div>';
@@ -1290,6 +1429,19 @@ function runCalc() {
     const k = readCalc();
     const bws = Object.keys(BW_TONES).map(Number);
 
+    // Half-peak range (99.9% availability)
+    const hpAll = bws.map(b => ({ bw: b, ...halfPeakRange(k, b) }));
+    const hp = hpAll.find(h => h.bw === k.bw);
+    const dTxt = d => d === Infinity ? '> 50 km' : d === 0 ? 'link does not close' : d.toFixed(2) + ' km';
+    $('hpDist').textContent = dTxt(hp.dist);
+    $('hpSub').textContent = `${k.bw} MHz: ≥ ${hp.cap.toFixed(0)} Mbps (MCS ${hp.mcs}, ${MCS_TABLE[hp.mcs].mod}) of ${hp.peak.toFixed(0)} Mbps peak (MCS ${k.maxMcs})`;
+    $('hpTable').innerHTML = `<tr><th>Bandwidth</th>${bws.map(b => `<th>${b} MHz</th>`).join('')}</tr>` +
+        `<tr><td>Peak capacity (Mbps)</td>${hpAll.map(h => `<td>${h.peak.toFixed(0)}</td>`).join('')}</tr>` +
+        `<tr><td>Half-peak MCS</td>${hpAll.map(h => `<td>${h.mcs}</td>`).join('')}</tr>` +
+        `<tr><td>Capacity at that MCS (Mbps)</td>${hpAll.map(h => `<td>${h.cap.toFixed(0)}</td>`).join('')}</tr>` +
+        `<tr class="hl"><td><b>Half-peak range (km)</b></td>${hpAll.map(h => `<td${h.bw === k.bw ? ' style="font-weight:bold"' : ''}>${h.dist === Infinity ? '> 50' : h.dist.toFixed(2)}</td>`).join('')}</tr>`;
+    const hpMarker = (hp.dist > 0 && hp.dist !== Infinity) ? { x: hp.dist, y: hp.cap, color: SERIES_COLORS[CALC_AVAILS.indexOf(HALF_PEAK_AVAIL)], label: `Half-peak range ${hp.dist.toFixed(2)} km` } : null;
+
     // Link budget at chosen distance
     const p = calcPath(k, k.dist, k.avail), clear = calcPath(k, k.dist, null);
     const noise = noiseDbm(k.bw, k.nf), snr = p.rsl - noise;
@@ -1306,6 +1458,7 @@ function runCalc() {
         ['System gain at that MCS', mcs >= 0 ? `${(k.txPower - thresholdRsl(k.bw, mcs, k.nf)).toFixed(2)} dB` : '–'],
         ['PHY rate', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams).toFixed(1)} Mbps (${k.streams} streams)` : '0'],
         ['User throughput', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams * k.macEff).toFixed(1)} Mbps` : '0', 'total'],
+        ['Half-peak range (99.9%)', dTxt(hp.dist), 'total'],
         ['Clear-sky RSL / SNR (no rain)', `${clear.rsl.toFixed(1)} dBm / ${(clear.rsl - noise).toFixed(1)} dB`]
     ];
     $('budgetTable').innerHTML = rows.map(([a, b, cls]) => `<tr class="${cls || ''}"><td>${a}</td><td>${b}</td></tr>`).join('');
@@ -1318,7 +1471,7 @@ function runCalc() {
     const N = 200, xs = Array.from({ length: N }, (_, i) => 0.1 + (k.maxDist - 0.1) * i / (N - 1));
     const series = CALC_AVAILS.map((a, i) => ({ name: `${a}%`, color: SERIES_COLORS[i], ys: xs.map(d => calcCapacityAt(k, d, a)) }));
     $('chartTitle').textContent = `Capacity vs. distance: ${k.freq} GHz, rain ${$('cRainZone').value === 'custom' ? 'custom' : 'zone ' + $('cRainZone').value} (${k.rainR} mm/h), ${k.bw} MHz, max MCS ${k.maxMcs}`;
-    drawChart(xs, series, 'Distance (km)', `User capacity (Mbps), ${k.streams} streams, ${Math.round(k.macEff * 100)}% eff.`);
+    drawChart(xs, series, 'Distance (km)', `User capacity (Mbps), ${k.streams} streams, ${Math.round(k.macEff * 100)}% eff.`, hpMarker);
 
     // Table 1: max distance per MCS x BW
     $('t1Title').textContent = `Maximum distance (km) at ${k.avail}% availability`;
