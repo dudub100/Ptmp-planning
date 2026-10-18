@@ -221,7 +221,7 @@
             </div>
         </details>
 
-        <details class="sec">
+        <details class="sec" open>
             <summary>Terrain and line of sight</summary>
             <div class="sec-body">
                 <label class="check"><input class="g" type="checkbox" id="skipLos"> Skip LoS (assume clear terrain)</label>
@@ -235,10 +235,12 @@
                         <option value="normal" selected>Normal: 3° rays, 30 samples</option>
                         <option value="coarse">Coarse: 5° rays, 20 samples</option>
                     </select></div>
-                <div class="form-group"><label for="demFiles">Local DEM tiles (SRTM .hgt, e.g. N32E034.hgt)</label>
-                    <input type="file" id="demFiles" accept=".hgt" multiple style="font-size:11px;width:100%;" onchange="loadDemFiles(this.files)">
+                <label class="check"><input type="checkbox" id="autoTiles" checked> Auto-download terrain tiles around each AP (AWS Terrain Tiles, free)</label>
+                <div class="hint" id="ttStatus">No terrain tiles downloaded yet.</div>
+                <div class="form-group"><label for="demFiles">Local DEM tiles (SRTM .hgt or .hgt.gz, e.g. N32E034.hgt)</label>
+                    <input type="file" id="demFiles" accept=".hgt,.gz" multiple style="font-size:11px;width:100%;" onchange="loadDemFiles(this.files)">
                     <div class="hint" id="demStatus" style="margin-top:4px;">No local tiles loaded: using online APIs.</div></div>
-                <div class="hint warn-note">Elevation data is a bare-earth model (SRTM / Copernicus). Free online APIs are rate-limited, so load local .hgt tiles for large sweeps. Buildings and trees are not in it, so set a clutter height for urban areas. Paths with missing elevation data are flagged “LoS unverified”, not treated as clear.</div>
+                <div class="hint warn-note">Elevation data is a bare-earth model (SRTM / Copernicus). Terrain tiles download automatically when you place an AP; the rate-limited point APIs are only a fallback. Buildings and trees are not in it, so set a clutter height for urban areas. Paths with missing elevation data are flagged “LoS unverified”, not treated as clear.</div>
             </div>
         </details>
 
@@ -711,6 +713,7 @@ function deployAP(lat, lng) {
     renderAPList(); refreshAPLabels(); markStale();
     $('btnCoverage').disabled = false;
     logMsg(`Deployed ${ap.name}.`);
+    if (!$('skipLos').checked) ensureTerrain(ap.lat, ap.lng, apTerrainRadius(ap), ap.name);
 }
 
 function toggleCollapse(id) { const ap = aps.find(a => a.id === id); if (ap) { ap.collapsed = !ap.collapsed; renderAPList(); } }
@@ -937,7 +940,11 @@ async function loadDemFiles(fileList) {
     for (const f of fileList) {
         const m = f.name.match(/([NS])(\d{2})([EW])(\d{3})/i);
         if (!m) { logMsg(`${f.name}: name must look like N32E034.hgt`, 'error'); continue; }
-        const buf = await f.arrayBuffer();
+        let buf;
+        if (/\.gz$/i.test(f.name)) {
+            if (typeof DecompressionStream === 'undefined') { logMsg(`${f.name}: this browser cannot unzip .gz; unzip it first`, 'error'); continue; }
+            buf = await new Response(f.stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+        } else buf = await f.arrayBuffer();
         const n = Math.round(Math.sqrt(buf.byteLength / 2));
         if (n * n * 2 !== buf.byteLength) { logMsg(`${f.name}: not a raw .hgt tile (unzip it first)`, 'error'); continue; }
         const dv = new DataView(buf), data = new Int16Array(n * n);
@@ -1040,7 +1047,7 @@ async function getElevations(points, onProgress) {
     const out = new Array(points.length);
     const need = new Map(); // online key -> [lat,lng]
     points.forEach((p, i) => {
-        const d = demTiles.length ? demElevation(p[0], p[1]) : undefined;
+        const d = localElevation(p[0], p[1]);
         if (d !== undefined) { out[i] = d; return; }
         const k = ekey(p[0], p[1]); out[i] = k;
         if (!elevCache.has(k) && !need.has(k)) need.set(k, k.split(',').map(Number));
@@ -1071,6 +1078,76 @@ function fillGaps(arr, maxGap = 3) {
     }
     return a;
 }
+
+// --- AUTO TERRAIN TILES: AWS Terrain Tiles (free public dataset), Terrarium PNG, zoom 12 (~32 m px here) ---
+const TT_ZOOM = 12;
+const ttTiles = new Map(), ttPending = new Map();
+let ttAttributed = false;
+const lonToTileX = (lon, z) => (lon + 180) / 360 * Math.pow(2, z);
+const latToTileY = (lat, z) => { const r = lat * DEG; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); };
+async function loadTerrariumTile(z, x, y) {
+    const key = `${z}/${x}/${y}`;
+    if (ttTiles.has(key)) return ttTiles.get(key);
+    if (ttPending.has(key)) return ttPending.get(key);
+    const pr = (async () => {
+        try {
+            const res = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`, { mode: 'cors' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const bmp = await createImageBitmap(await res.blob());
+            const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+            const ctx = cv.getContext('2d', { willReadFrequently: true }); ctx.drawImage(bmp, 0, 0);
+            const px = ctx.getImageData(0, 0, cv.width, cv.height).data, n = cv.width * cv.height, data = new Float32Array(n);
+            // Terrarium decode: (R*256 + G + B/256) - 32768; clamp bathymetry to sea level
+            for (let i = 0; i < n; i++) data[i] = Math.max(0, px[4 * i] * 256 + px[4 * i + 1] + px[4 * i + 2] / 256 - 32768);
+            const tile = { w: cv.width, h: cv.height, data };
+            ttTiles.set(key, tile);
+            return tile;
+        } catch (e) { return null; }
+        finally { ttPending.delete(key); }
+    })();
+    ttPending.set(key, pr);
+    return pr;
+}
+function ttElevation(lat, lng) {
+    const fx = lonToTileX(lng, TT_ZOOM), fy = latToTileY(lat, TT_ZOOM);
+    const tile = ttTiles.get(`${TT_ZOOM}/${Math.floor(fx)}/${Math.floor(fy)}`);
+    if (!tile) return undefined;
+    const { w, h, data } = tile;
+    const px = Math.min(w - 1, Math.max(0, (fx - Math.floor(fx)) * w - 0.5)), py = Math.min(h - 1, Math.max(0, (fy - Math.floor(fy)) * h - 0.5));
+    const x0 = Math.min(w - 2, Math.floor(px)), y0 = Math.min(h - 2, Math.floor(py)), ax = px - x0, ay = py - y0;
+    const v = (r, c) => data[r * w + c];
+    return (v(y0, x0) * (1 - ax) + v(y0, x0 + 1) * ax) * (1 - ay) + (v(y0 + 1, x0) * (1 - ax) + v(y0 + 1, x0 + 1) * ax) * ay;
+}
+/** Local sources first: loaded .hgt tiles, then downloaded Terrarium tiles */
+function localElevation(lat, lng) {
+    const d = demTiles.length ? demElevation(lat, lng) : undefined;
+    return d !== undefined ? d : ttElevation(lat, lng);
+}
+function updateTileStatus() {
+    $('ttStatus').textContent = ttTiles.size ? `${ttTiles.size} terrain tile(s) downloaded (zoom ${TT_ZOOM}).` : 'No terrain tiles downloaded yet.';
+}
+/** Download every Terrarium tile covering a circle of radiusKm around (lat,lng) */
+async function ensureTerrain(lat, lng, radiusKm, label) {
+    if (!$('autoTiles').checked) return { got: 0, failed: 0 };
+    const r = Math.max(1, radiusKm * 1.1);
+    const n = getDestination(lat, lng, r, 0), s = getDestination(lat, lng, r, 180), e = getDestination(lat, lng, r, 90), w = getDestination(lat, lng, r, 270);
+    const x0 = Math.floor(lonToTileX(w.lng, TT_ZOOM)), x1 = Math.floor(lonToTileX(e.lng, TT_ZOOM));
+    const y0 = Math.floor(latToTileY(n.lat, TT_ZOOM)), y1 = Math.floor(latToTileY(s.lat, TT_ZOOM));
+    const jobs = [];
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) if (!ttTiles.has(`${TT_ZOOM}/${x}/${y}`)) jobs.push([x, y]);
+    if (!jobs.length) return { got: 0, failed: 0 };
+    let got = 0, failed = 0;
+    for (let i = 0; i < jobs.length; i += 6) {
+        const res = await Promise.all(jobs.slice(i, i + 6).map(([x, y]) => loadTerrariumTile(TT_ZOOM, x, y)));
+        res.forEach(t => t ? got++ : failed++);
+    }
+    if (got && !ttAttributed) { map.attributionControl.addAttribution('Terrain: <a href="https://registry.opendata.aws/terrain-tiles/" target="_blank" rel="noopener">AWS Terrain Tiles</a> (Mapzen; SRTM, GMTED2010, ETOPO1 and others)'); ttAttributed = true; }
+    updateTileStatus();
+    if (failed) logMsg(`${label}: ${failed} of ${jobs.length} terrain tiles failed to download; those areas fall back to the elevation APIs.`, 'warn');
+    else logMsg(`${label}: downloaded ${got} terrain tile(s) covering ${radiusKm.toFixed(1)} km.`);
+    return { got, failed };
+}
+function apTerrainRadius(ap) { const c = readCfg(); return mcsRadii(c, ap, c.tuAnt)[0].radiusKm; }
 
 // --- POINT-TO-POINT LOS WITH FRESNEL + CLUTTER ---
 function profilePoints(lat1, lon1, lat2, lon2) {
@@ -1127,7 +1204,8 @@ async function assignTUs() {
 
         // 2. LoS: one batched, cached elevation request for every candidate profile
         if (!c.skipLos && cands.length) {
-            btn.textContent = 'Fetching terrain…';
+            btn.textContent = 'Fetching terrain tiles…';
+            for (const ap of new Set(cands.map(k => k.ap))) await ensureTerrain(ap.lat, ap.lng, apTerrainRadius(ap), ap.name);
             const offsets = [], all = [];
             cands.forEach(k => { const pts = profilePoints(k.ap.lat, k.ap.lng, k.tu.lat, k.tu.lng); offsets.push([all.length, pts.length]); all.push(...pts); });
             const { elev, failed } = await getElevations(all, (d, n, msg) => btn.textContent = `Fetching terrain ${d}/${n}${msg ? ' (' + msg + ')' : ''}…`);
@@ -1221,6 +1299,8 @@ async function calculateCoverage() {
             // Terrain (one batched request per AP)
             let elevOf = null;
             if (!c.skipLos) {
+                btn.textContent = `${ap.name}: terrain tiles…`;
+                await ensureTerrain(ap.lat, ap.lng, maxR, ap.name);
                 const pts = sectors.flatMap(sec => sec.rays.flatMap(r => r.map(p => [p.lat, p.lng])));
                 const { elev } = await getElevations(pts, (d, n, msg) => btn.textContent = `${ap.name}: terrain ${d}/${n}${msg ? ' (' + msg + ')' : ''}…`);
                 let idx = 0; const map2 = new Map();
