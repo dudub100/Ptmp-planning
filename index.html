@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PtMP Planner: MU-MIMO, SINR & Wi-Fi 7 Link Calculator</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -11,6 +11,7 @@
     * { box-sizing: border-box; }
     body, html { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; height: 100%; width: 100%; overflow: hidden; color: var(--ink); }
     body { display: flex; flex-direction: column; }
+    @supports (height: 100dvh) { body { height: 100dvh; } }
 
     /* Top bar + tabs */
     #topbar { height: 42px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 12px; background: #1f2933; color: #fff; z-index: 5; }
@@ -23,7 +24,7 @@
     #staleBadge[hidden] { display: none; }
 
     main { flex: 1; min-height: 0; position: relative; }
-    .view { position: absolute; inset: 0; display: none; }
+    .view { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: none; }
     .view.active { display: flex; }
 
     /* Planner */
@@ -126,14 +127,37 @@
     .hp-sub { font-size: 13px; color: #555; }
     .model-note { font-size: 11px; color: var(--muted); line-height: 1.4; max-width: 1100px; }
 
-    @media (max-width: 900px) {
-        #sidebar { width: 100%; min-width: 0; height: 55%; }
-        #planner.view.active { flex-direction: column-reverse; }
-        #map { height: 45%; }
-        #calcView.active { flex-direction: column; overflow-y: auto; }
-        #calcInputs { width: 100%; min-width: 0; height: auto; }
-        #calcResults { height: auto; overflow: visible; }
+    /* Panel toggle (desktop: collapse sidebar; mobile: slide-in drawer) */
+    #panelToggle { width: auto; margin: 0; padding: 6px 10px; font-size: 12px; background: #323f4b; color: #fff; border: 1px solid #52606d; white-space: nowrap; }
+    #panelToggle:hover { background: #3e4c59; }
+    #sidebarHead { display: none; }
+    body.sidebar-collapsed #sidebar { display: none; }
+    .legend-title { cursor: pointer; user-select: none; }
+    .legend.collapsed .legend-item { display: none; }
+    #staleBadge .short { display: none; }
+
+    @media (max-width: 760px) {
+        #topbar { gap: 6px; padding: 0 6px; }
+        #topbar .brand { display: none; }
+        .tab { padding: 6px 8px; font-size: 12px; }
+        #staleBadge { font-size: 11px; padding: 3px 6px; }
+        #staleBadge .long { display: none; } #staleBadge .short { display: inline; }
+        #map { width: 100%; height: 100%; }
+        #sidebar { position: absolute; top: 0; left: 0; bottom: 0; width: min(92vw, 430px); min-width: 0; height: auto; z-index: 1100;
+                   transform: translateX(-104%); transition: transform 0.25s ease; box-shadow: 4px 0 14px rgba(0,0,0,0.3); }
+        body.drawer-open #sidebar { transform: none; }
+        body.sidebar-collapsed #sidebar { display: flex; }
+        #sidebarHead { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #e9ecef; border-bottom: 1px solid #ccc; font-weight: bold; font-size: 14px; flex-shrink: 0; }
+        #sidebarHead button { width: auto; margin: 0; padding: 6px 12px; }
+        input[type="number"], input[type="text"], select, textarea { font-size: 16px; }  /* stops iOS zoom-on-focus */
+        label { font-size: 12px; }
+        #logBox { height: 90px; min-height: 90px; }
+        .legend { left: 8px; bottom: 8px; max-height: 45vh; font-size: 10px; padding: 6px 8px; }
+        #calcView.active { flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        #calcInputs { width: 100%; min-width: 0; height: auto; border-right: none; border-bottom: 1px solid #ccc; overflow: visible; }
+        #calcResults { height: auto; overflow: visible; padding: 12px 10px 40px; }
         .calc-grid { grid-template-columns: 1fr; }
+        .hp-num { font-size: 24px; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -141,18 +165,20 @@
 <body>
 
 <header id="topbar">
+    <button id="panelToggle" onclick="togglePanel()" aria-controls="sidebar">☰ Settings</button>
     <div class="brand">PtMP Planner</div>
     <nav>
         <button class="tab active" data-view="planner" onclick="showView('planner')">Map planner</button>
         <button class="tab" data-view="calcView" onclick="showView('calcView')">Link calculator</button>
     </nav>
-    <div id="staleBadge" hidden>Inputs changed: re-run coverage and assignment</div>
+    <div id="staleBadge" hidden><span class="long">Inputs changed: re-run coverage and assignment</span><span class="short">Re-run needed</span></div>
 </header>
 
 <main>
 <!-- ===================== MAP PLANNER ===================== -->
 <section id="planner" class="view active">
 <div id="sidebar">
+    <div id="sidebarHead"><span>Planner settings</span><button class="btn-secondary" onclick="togglePanel(false)">Show map ✕</button></div>
     <div id="sidebar-scroll">
 
         <details class="sec" open>
@@ -202,8 +228,9 @@
                 <div class="row">
                     <div class="form-group"><label for="tuNf">NF (dB)</label><input class="g" type="number" id="tuNf" value="7" step="0.5"></div>
                     <div class="form-group"><label for="cpeHeight">Height AGL (m)</label><input class="g" type="number" id="cpeHeight" value="8"></div>
+                    <div class="form-group"><label for="dishEff">Dish eff. (%)</label><input class="g" type="number" id="dishEff" value="55" min="10" max="90"></div>
                 </div>
-                <div class="hint">New TUs get the default antenna. You can change it per TU from its popup.</div>
+                <div class="hint">New TUs get the default antenna. You can change it per TU from its popup. Dish gain and beamwidth follow the frequency and dish efficiency (same formula as the link calculator).</div>
             </div>
         </details>
 
@@ -214,10 +241,11 @@
                 <div class="row">
                     <div class="form-group"><label for="activity">Activity factor (%)</label><input class="g" type="number" id="activity" value="100" min="0" max="100"></div>
                     <div class="form-group"><label for="apFb">AP F/B, sidelobe floor (dB)</label><input class="g" type="number" id="apFb" value="30"></div>
-                    <div class="form-group"><label for="tuFb">TU F/B, sidelobe floor (dB)</label><input class="g" type="number" id="tuFb" value="25"></div>
+                    <div class="form-group"><label for="tuFb">TU patch F/B (dB)</label><input class="g" type="number" id="tuFb" value="25"></div>
+                    <div class="form-group"><label for="dishFb">TU dish F/B (dB)</label><input class="g" type="number" id="dishFb" value="40"></div>
                 </div>
-                <label class="check"><input class="g" type="checkbox" id="rainOnInterf"> Apply rain fade to interferers too</label>
-                <div class="hint">Antenna model: 3GPP TR 38.901 horizontal pattern, G(φ) = Gmax − min(12·(φ/φ3dB)², F/B). AP φ3dB = sector beamwidth; TU φ3dB = 30° or 45°. All co-channel sectors are assumed to transmit downlink at the same time (synchronised TDD), interferer paths are assumed LoS, adjacent-channel leakage is ignored.</div>
+                <label class="check"><input class="g" type="checkbox" id="rainOnInterf"> Apply rain fade to other APs' interference too</label>
+                <div class="hint">Antenna model: 3GPP TR 38.901 horizontal pattern, G(φ) = Gmax − min(12·(φ/φ3dB)², F/B). AP φ3dB = sector beamwidth; TU φ3dB = 30° or 45° for patch arrays, ≈ 70·λ/D for dishes. All co-channel sectors are assumed to transmit downlink at the same time (synchronised TDD), interferer paths are assumed LoS, adjacent-channel leakage is ignored. Interference from other sectors of the serving AP always gets the same rain fade as the wanted signal (same path).</div>
             </div>
         </details>
 
@@ -358,7 +386,7 @@
                     <div class="form-group"><label for="cAvail">Target availability (%)</label><input class="c" type="number" id="cAvail" value="99.9" step="0.01" min="99" max="99.999"></div>
                     <div class="form-group"><label for="cMaxDist">Chart range (km)</label><input class="c" type="number" id="cMaxDist" placeholder="auto" min="0.1" step="0.5"></div>
                 </div>
-                <div class="hint">Chart range is automatic when empty: 10 km with a dish at Rx, 2 km otherwise.</div>
+                <div class="hint">Chart range is automatic when empty: 10 km with a dish at either end, 2 km otherwise.</div>
             </div>
         </details>
     </aside>
@@ -521,10 +549,24 @@ function dishGain(diamFt, fGHz, eff) {
     return 10 * Math.log10(eff * Math.pow(Math.PI * D / lam, 2));
 }
 
+// TU antennas, shared by the map planner and the link calculator
 const TU_ANTENNAS = {
-    t30: { label: '30°, 8 clusters of 2×2 patches (20 dBi)', short: '30° / 20 dBi', gain: 20, bw: 30 },
-    t45: { label: '45°, 8 clusters of 2×1 patches (17 dBi)', short: '45° / 17 dBi', gain: 17, bw: 45 }
+    t30:   { label: '30° patch array, 8 clusters of 2×2 (20 dBi)', short: '30° / 20 dBi', type: 'patch', gain: 20, bw: 30 },
+    t45:   { label: '45° patch array, 8 clusters of 2×1 (17 dBi)', short: '45° / 17 dBi', type: 'patch', gain: 17, bw: 45 },
+    dish1: { label: '1 ft external dish', short: '1 ft dish', type: 'dish', diamFt: 1 },
+    dish2: { label: '2 ft external dish', short: '2 ft dish', type: 'dish', diamFt: 2 }
 };
+/** Resolve a TU antenna at a frequency: dish gain = eff·(πD/λ)², 3 dB beamwidth ≈ 70·λ/D degrees */
+function tuAntenna(key, fGHz, eff) {
+    const d = TU_ANTENNAS[key] || TU_ANTENNAS.t30;
+    if (d.type !== 'dish') return d;
+    const lam = 0.299792458 / fGHz, D = d.diamFt * 0.3048;
+    return { ...d, gain: dishGain(d.diamFt, fGHz, eff), bw: 70 * lam / D };
+}
+function tuAntLabel(key, fGHz, eff) {
+    const a = tuAntenna(key, fGHz, eff);
+    return a.type === 'dish' ? `${a.label} (${a.gain.toFixed(1)} dBi, ${a.bw.toFixed(1)}° at ${fGHz} GHz)` : a.label;
+}
 
 // ---- Geodesy ----
 const DEG = Math.PI / 180;
@@ -565,7 +607,12 @@ function fillSelect(sel, entries, selected) {
 }
 fillSelect($('channelBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 80);
 fillSelect($('rainZone'), [...Object.entries(RAIN_ZONES).map(([z, r]) => [z, `${z} (${r} mm/h)`]), ['custom', 'Custom']], 'K');
-fillSelect($('tuAnt'), Object.entries(TU_ANTENNAS).map(([k, a]) => [k, a.label]), 't30');
+function fillTuAntSelect() {
+    const sel = $('tuAnt'), cur = sel.value || 't30', f = num('freq') || 26, eff = (num('dishEff') || 55) / 100;
+    fillSelect(sel, Object.keys(TU_ANTENNAS).map(k => [k, tuAntLabel(k, f, eff)]), cur);
+}
+fillTuAntSelect();
+['freq', 'dishEff'].forEach(id => $(id).addEventListener('change', fillTuAntSelect));
 
 function syncRainRate(zoneSel, rateInput) {
     const z = $(zoneSel).value;
@@ -603,6 +650,8 @@ function readCfg() {
         activity: clamp(num('activity'), 0, 100) / 100,
         apFb: num('apFb'),
         tuFb: num('tuFb'),
+        dishFb: isNaN(num('dishFb')) ? 40 : num('dishFb'),
+        dishEff: Math.min(90, Math.max(10, num('dishEff') || 55)) / 100,
         rainOnInterf: $('rainOnInterf').checked,
         skipLos: $('skipLos').checked,
         fresnel: clamp(num('fresnelPct') || 0, 0, 100) / 100,
@@ -643,16 +692,43 @@ document.querySelectorAll('#sidebar .g').forEach(el => el.addEventListener('chan
 // --- DYNAMIC UI ---
 function updateAll() { updateLegend(); refreshAPLabels(); }
 
+// --- PANEL / DRAWER (responsive) ---
+const mobileMq = window.matchMedia('(max-width: 760px)');
+let legendCollapsed = mobileMq.matches;
+function toggleLegend() { legendCollapsed = !legendCollapsed; updateLegend(); }
+function updatePanelToggle() {
+    const b = $('panelToggle');
+    b.style.display = $('planner').classList.contains('active') ? '' : 'none';
+    if (mobileMq.matches) b.textContent = document.body.classList.contains('drawer-open') ? '✕ Map' : '☰ Settings';
+    else b.textContent = document.body.classList.contains('sidebar-collapsed') ? '☰ Show panel' : '« Hide panel';
+    b.setAttribute('aria-expanded', mobileMq.matches ? document.body.classList.contains('drawer-open') : !document.body.classList.contains('sidebar-collapsed'));
+}
+function togglePanel(open) {
+    if (mobileMq.matches) {
+        const o = open === undefined ? !document.body.classList.contains('drawer-open') : open;
+        document.body.classList.toggle('drawer-open', o);
+    } else {
+        const collapsed = open === undefined ? !document.body.classList.contains('sidebar-collapsed') : !open;
+        document.body.classList.toggle('sidebar-collapsed', collapsed);
+        setTimeout(() => map.invalidateSize(), 60);
+    }
+    updatePanelToggle();
+}
+/** On phones, slide the drawer away so the map is visible while something runs */
+function showMapOnMobile() { if (mobileMq.matches) togglePanel(false); }
+(mobileMq.addEventListener ? (f) => mobileMq.addEventListener('change', f) : (f) => mobileMq.addListener(f))(() => { document.body.classList.remove('drawer-open'); setTimeout(() => map.invalidateSize(), 60); updatePanelToggle(); });
+
 function updateLegend() {
     const c = readCfg();
     const box = $('capLegend');
-    let html = `<div style="font-weight:bold;margin-bottom:6px;">${c.interf ? 'DL SINR' : 'DL SNR'} zones, PHY per stream<br><span style="font-weight:normal;color:#666;">${c.bw} MHz, GI ${c.gi} µs, ${c.avail}% avail.</span></div>`;
+    let html = `<div class="legend-title" onclick="toggleLegend()" style="font-weight:bold;margin-bottom:6px;">${legendCollapsed ? '▸' : '▾'} ${c.interf ? 'DL SINR' : 'DL SNR'} zones, PHY per stream<br><span style="font-weight:normal;color:#666;">${c.bw} MHz, GI ${c.gi} µs, ${c.avail}% avail.</span></div>`;
     for (let m = c.maxMcs; m >= 0; m--) {
         const t = MCS_TABLE[m];
         html += `<div class="legend-item"><div class="legend-color" style="background:${t.color};"></div>MCS ${t.mcs} (${t.mod}) <b>&nbsp;${phyRate(c.bw, m, c.gi).toFixed(1)} Mbps</b></div>`;
     }
     html += `<div class="legend-item"><div class="legend-color" style="background:#9e9e9e;"></div>Terrain data unavailable</div>`;
     box.innerHTML = html;
+    box.classList.toggle('collapsed', legendCollapsed);
 }
 
 function sectorPeak(c) { return phyRate(c.bw, c.maxMcs, c.gi) * c.streams * 2; }
@@ -675,7 +751,7 @@ function setMode(mode) {
     $('modeTU').className = mode === 'TU' ? 'mode-btn active' : 'mode-btn';
     $('apControls').style.display = mode === 'AP' ? 'block' : 'none';
     $('tuControls').style.display = mode === 'TU' ? 'block' : 'none';
-    logMsg(`Mode changed to: ${mode === 'AP' ? 'deploy base station' : 'deploy terminal unit'}`);
+    logMsg(`Mode changed to: ${mode === 'AP' ? 'deploy base station' : 'deploy terminal unit'}${mobileMq.matches ? '. Tap “✕ Map” (top left) and tap the map to place it.' : ''}`);
 }
 ['modeAP', 'modeTU'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(id).click(); } }));
 
@@ -814,6 +890,7 @@ function bulkImportTUs() {
     });
     logMsg(`Imported ${count} terminal units.${bad ? ` Skipped ${bad} unreadable line(s).` : ''}`, bad ? 'warn' : 'info');
     $('bulkTuInput').value = '';
+    if (count) showMapOnMobile();
 }
 
 function setTuAntenna(id, key) {
@@ -832,7 +909,8 @@ function deleteTU(id) {
 }
 
 function tuPopup(tu) {
-    const antSel = `<select onchange="setTuAntenna(${tu.id}, this.value)">${Object.entries(TU_ANTENNAS).map(([k, a]) => `<option value="${k}"${k === tu.ant ? ' selected' : ''}>${a.label}</option>`).join('')}</select>`;
+    const f = num('freq') || 26, eff = (num('dishEff') || 55) / 100;
+    const antSel = `<select onchange="setTuAntenna(${tu.id}, this.value)">${Object.keys(TU_ANTENNAS).map(k => `<option value="${k}"${k === tu.ant ? ' selected' : ''}>${tuAntLabel(k, f, eff)}</option>`).join('')}</select>`;
     let body = '';
     const r = tu.result;
     if (!r) {
@@ -882,7 +960,8 @@ function linkLoss(c, dKm, withRain) {
 
 /** Full DL (SNR + SINR) and UL (SNR) evaluation of a TU location served by sector s of ap */
 function evalLink(c, ap, s, lat, lng, antKey) {
-    const ant = TU_ANTENNAS[antKey] || TU_ANTENNAS.t30;
+    const ant = tuAntenna(antKey, c.freq, c.dishEff);
+    const tuFloor = ant.type === 'dish' ? c.dishFb : c.tuFb;
     const d = getDistance(ap.lat, ap.lng, lat, lng);
     const off = angDiff(getBearing(ap.lat, ap.lng, lat, lng), sectorCenter(ap, s));
     const gAp = ap.apGain + patternDb(off, ap.sectorBeamwidth, c.apFb);
@@ -898,8 +977,9 @@ function evalLink(c, ap, s, lat, lng, antKey) {
             const di = getDistance(b.lat, b.lng, lat, lng);
             const brgFromB = getBearing(b.lat, b.lng, lat, lng);
             const offRx = b.id === ap.id ? 0 : angDiff(getBearing(lat, lng, b.lat, b.lng), brgServing);
-            const gR = ant.gain + patternDb(offRx, ant.bw, c.tuFb);
-            const Li = linkLoss(c, di, c.rainOnInterf).L;
+            const gR = ant.gain + patternDb(offRx, ant.bw, tuFloor);
+            // Co-sited sectors share the wanted signal's exact path, so they always get the same rain fade
+            const Li = linkLoss(c, di, c.rainOnInterf || b.id === ap.id).L;
             for (let t = 0; t < b.numSectors; t++) {
                 if ((b.id === ap.id && t === s) || b.channels[t] !== ch) continue;
                 const gT = b.apGain + patternDb(angDiff(brgFromB, sectorCenter(b, t)), b.sectorBeamwidth, c.apFb);
@@ -918,7 +998,7 @@ function evalLink(c, ap, s, lat, lng, antKey) {
 
 /** Boresight downlink range per MCS (thermal noise only), km */
 function mcsRadii(c, ap, antKey) {
-    const ant = TU_ANTENNAS[antKey] || TU_ANTENNAS.t30;
+    const ant = tuAntenna(antKey, c.freq, c.dishEff);
     const nDl = noiseDbm(c.bw, c.tuNf);
     const eirp = ap.txPower + ap.apGain + ant.gain;
     return MCS_TABLE.slice(0, c.maxMcs + 1).map(m => {
@@ -1180,6 +1260,7 @@ async function assignTUs() {
     if (aps.length === 0 || tus.length === 0) return logMsg('Need at least 1 AP and 1 TU.', 'warn');
     const c = readCfg();
     const btn = $('btnAssign'); btn.disabled = true; btn.textContent = 'Evaluating links…';
+    showMapOnMobile();
     try {
         const maxTuSec = parseInt($('maxTuSector').value) || 16;
         const maxTuAp = parseInt($('maxTuAp').value) || 32;
@@ -1272,6 +1353,7 @@ async function calculateCoverage() {
     if (aps.length === 0) return;
     const c = readCfg();
     const btn = $('btnCoverage'); btn.disabled = true; btn.textContent = 'Processing sweep…';
+    showMapOnMobile();
     try {
         Object.keys(apCoverageLayers).forEach(id => { apCoverageLayers[id].forEach(l => map.removeLayer(l)); apCoverageLayers[id] = []; });
         const RES = { fine: [40, 2], normal: [30, 3], coarse: [20, 5] }[c.sweepRes] || [30, 3];
@@ -1374,16 +1456,17 @@ function exportCsv() {
 }
 
 updateAll();
+if (mobileMq.matches) document.body.classList.add('drawer-open');
+updatePanelToggle();
 // =====================================================================
 //  LINK CALCULATOR (port of the Streamlit Wi-Fi 7 mmWave calculator)
 // =====================================================================
 const CALC_ANTENNAS = {
-    ap60:  { label: 'AP 60° sector (5 dBi patch, 32 elements)', gain: () => 5 + 10 * Math.log10(32) },
-    ap90:  { label: 'AP 90° sector (6 dBi patch, 16 elements)', gain: () => 6 + 10 * Math.log10(16) },
-    tu30:  { label: 'TU 30° (8 clusters of 2×2 patches)', gain: () => 20 },
-    tu45:  { label: 'TU 45° (8 clusters of 2×1 patches)', gain: () => 17 },
-    dish1: { label: '1 ft fixed dish', gain: (f, eff) => dishGain(1, f, eff), dish: true },
-    dish2: { label: '2 ft fixed dish', gain: (f, eff) => dishGain(2, f, eff), dish: true },
+    ap60:  { label: 'AP: 60° sector (5 dBi patch, 32 elements)', gain: () => 5 + 10 * Math.log10(32) },
+    ap90:  { label: 'AP: 90° sector (6 dBi patch, 16 elements)', gain: () => 6 + 10 * Math.log10(16) },
+    // TU options come from the same list as the map planner
+    ...Object.fromEntries(Object.entries(TU_ANTENNAS).map(([k, d]) => ['tu_' + k,
+        { label: 'TU: ' + d.label, gain: (f, eff) => tuAntenna(k, f, eff).gain, dish: d.type === 'dish' }])),
     custom:{ label: 'Custom gain', gain: null }
 };
 const CALC_AVAILS = [99, 99.5, 99.9, 99.95, 99.99, 99.995];
@@ -1391,8 +1474,8 @@ const SERIES_COLORS = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728', '#9467bd', '#
 
 fillSelect($('cRainZone'), [...Object.entries(RAIN_ZONES).map(([z, r]) => [z, `${z} (${r} mm/h)`]), ['custom', 'Custom']], 'K');
 fillSelect($('cBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 140);
-fillSelect($('cTxPreset'), Object.entries(CALC_ANTENNAS).filter(([k]) => !k.startsWith('dish')).map(([k, a]) => [k, a.label]), 'ap60');
-fillSelect($('cRxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'tu30');
+fillSelect($('cTxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'ap60');
+fillSelect($('cRxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'tu_t30');
 $('cRainZone').addEventListener('change', () => syncRainRate('cRainZone', 'cRainRate'));
 
 function syncCalcGains() {
@@ -1408,13 +1491,14 @@ function readCalc() {
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const rxKey = $('cRxPreset').value;
     const md = num('cMaxDist');
+    const txKey = $('cTxPreset').value;
     return {
         freq: clamp(num('cFreq') || 31, 1, 52), pol: $('cPol').value, rainR: Math.max(0, num('cRainRate') || 0), rho: Math.max(0, num('cRho') || 0),
         bw: parseInt($('cBw').value), gi: num('cGi'), maxMcs: clamp(Math.round(num('cMaxMcs')), 0, 13), margin: num('cMargin') || 0,
         txPower: num('cTxPower'), txGain: num('cTxGain'), rxGain: num('cRxGain'), nf: num('cNf'),
         streams: Math.max(1, Math.round(num('cStreams')) || 1), macEff: clamp(num('cMacEff') || 100, 1, 100) / 100,
         avail: clamp(num('cAvail') || 99.9, 99, 99.999), dist: Math.max(0.01, num('cDist') || 1),
-        maxDist: md > 0 ? md : (CALC_ANTENNAS[rxKey].dish ? 10 : 2)
+        maxDist: md > 0 ? md : ((CALC_ANTENNAS[rxKey].dish || CALC_ANTENNAS[txKey].dish) ? 10 : 2)
     };
 }
 
@@ -1577,6 +1661,7 @@ function showView(id) {
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id));
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === id));
     if (id === 'planner') setTimeout(() => map.invalidateSize(), 50);
+    updatePanelToggle();
     if (id === 'calcView' && !calcReady) { calcReady = true; runCalc(); }
 }
 </script>
