@@ -217,7 +217,7 @@
                     <div class="form-group"><label for="rainZone">Rain zone</label><select class="g" id="rainZone"></select></div>
                     <div class="form-group"><label for="rainRate">R0.01 (mm/h)</label><input class="g" type="number" id="rainRate" value="42" readonly></div>
                 </div>
-                <div class="hint" id="rainMapHint">R0.01 is read from the ITU-R P.837-7 digital map (0.125° grid, bilinear) at each AP's coordinates and applied to that AP's links. You can override it per AP in the AP card.</div>
+                <div class="hint" id="rainMapHint">R0.01 is read from the ITU-R P.837-7 digital map (0.125° grid, bilinear) at each AP's coordinates and applied to that AP's links. You can override it per AP in the AP card.<div id="rainSiteList" style="margin-top:4px;font-weight:bold;color:#1f2933;"></div></div>
                 <div class="row">
                     <div class="form-group"><label for="pol">Polarization</label><select class="g" id="pol"><option value="V" selected>Vertical</option><option value="H">Horizontal</option></select></div>
                     <div class="form-group"><label for="rho">Water vapour (g/m³)</label><input class="g" type="number" id="rho" value="7.5" step="0.5" min="0"></div>
@@ -248,7 +248,7 @@
                 <label class="check"><input class="g" type="checkbox" id="useInterf" checked> Use downlink SINR (co-channel interference)</label>
                 <div class="row">
                     <div class="form-group"><label for="activity">Activity factor (%)</label><input class="g" type="number" id="activity" value="100" min="0" max="100"></div>
-                    <div class="form-group"><label for="apFb">AP F/B, sidelobe floor (dB)</label><input class="g" type="number" id="apFb" value="30"></div>
+                    <div class="form-group"><label for="apFb">AP F/B, sidelobe floor (dB)</label><input class="g" type="number" id="apFb" value="60"></div>
                     <div class="form-group"><label for="tuFb">TU patch F/B (dB)</label><input class="g" type="number" id="tuFb" value="25"></div>
                     <div class="form-group"><label for="dishFb">TU dish F/B (dB)</label><input class="g" type="number" id="dishFb" value="40"></div>
                 </div>
@@ -343,7 +343,7 @@
             <summary>System parameters</summary>
             <div class="sec-body">
                 <div class="row">
-                    <div class="form-group"><label for="cFreq">Frequency (GHz)</label><input class="c" type="number" id="cFreq" value="31" min="1" max="52" step="0.5"></div>
+                    <div class="form-group"><label for="cFreq">Frequency (GHz)</label><input class="c" type="number" id="cFreq" value="26" min="1" max="52" step="0.5"></div>
                     <div class="form-group"><label for="cPol">Polarization</label><select class="c" id="cPol"><option value="V">Vertical</option><option value="H">Horizontal</option></select></div>
                 </div>
                 <div class="row">
@@ -355,6 +355,7 @@
                     <div class="form-group"><label for="cLon">Longitude</label><input class="c" type="number" id="cLon" value="34.956" step="0.001"></div>
                     <div class="form-group" style="flex:0 0 auto;align-self:flex-end;"><button type="button" class="btn-secondary" style="margin:0;padding:6px 8px;font-size:11px;" onclick="calcUseApLocation()">Use AP 1</button></div>
                 </div>
+                <div class="hint" id="cRainLocInfo" style="font-weight:bold;color:#1f2933;"></div>
                 <div class="row">
                     <div class="form-group"><label for="cRho">Vapour (g/m³)</label><input class="c" type="number" id="cRho" value="7.5" step="0.5"></div>
                 </div>
@@ -649,7 +650,7 @@ const chColor = ch => CH_COLORS[((ch - 1) % CH_COLORS.length + CH_COLORS.length)
 function fillSelect(sel, entries, selected) {
     sel.innerHTML = entries.map(([v, t]) => `<option value="${v}"${String(v) === String(selected) ? ' selected' : ''}>${t}</option>`).join('');
 }
-fillSelect($('channelBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 80);
+fillSelect($('channelBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 320);
 fillSelect($('rainZone'), [...Object.entries(RAIN_ZONES).map(([z, r]) => [z, `${z} (${r} mm/h)`]), ['custom', 'Custom']], 'K');
 function fillTuAntSelect() {
     const sel = $('tuAnt'), cur = sel.value || 't30', f = num('freq') || 26, eff = (num('dishEff') || 55) / 100;
@@ -668,7 +669,7 @@ function syncRainSourceUi() {
     const map = $('rainSource').value === 'map';
     $('rainZoneRow').style.display = map ? 'none' : '';
     $('rainMapHint').style.display = map ? '' : 'none';
-    if (typeof renderAPList === 'function') renderAPList();
+    if (typeof renderAPList === 'function') { renderAPList(); refreshAPLabels(); }
 }
 $('rainSource').addEventListener('change', syncRainSourceUi);
 
@@ -792,7 +793,7 @@ function refreshAPLabels() {
         if (apLabels[ap.id]) map.removeLayer(apLabels[ap.id]);
         apLabels[ap.id] = L.marker([ap.lat, ap.lng], {
             interactive: false,
-            icon: L.divIcon({ className: 'cap-label-container', html: `<span class="cap-label">${ap.numSectors}× ${cap} Mbps</span>`, iconSize: null, iconAnchor: [-12, 10] })
+            icon: L.divIcon({ className: 'cap-label-container', html: `<span class="cap-label">${ap.numSectors}× ${cap} Mbps<br>R0.01 ${apRain(ap, c).toFixed(1)} mm/h</span>`, iconSize: null, iconAnchor: [-12, 10] })
         }).addTo(map);
     });
 }
@@ -867,7 +868,14 @@ function rainRowHtml(ap) {
         ${ap.rainROverride != null ? `<div class="form-group" style="flex:0 0 auto;"><button class="btn-secondary" style="margin:0;padding:5px 8px;font-size:11px;" onclick="updateAP(${ap.id}, 'rainReset')">Use map (${ap.rainRMap != null ? ap.rainRMap.toFixed(1) : '?'})</button></div>` : ''}
     </div>`;
 }
+function updateRainSiteList() {
+    const el = $('rainSiteList'); if (!el) return;
+    const c = readCfg();
+    if (!aps.length) { el.textContent = P837 ? 'Place an AP to see the rain rate at its site.' : 'Rain map loading…'; return; }
+    el.innerHTML = aps.map(ap => `${esc(ap.name)}: ${apRain(ap, c).toFixed(1)} mm/h <span style="font-weight:normal;color:#666;">(${apRainSource(ap, c)})</span>`).join('<br>');
+}
 function renderAPList() {
+    updateRainSiteList();
     const container = $('apContainer'); container.innerHTML = '';
     aps.forEach(ap => {
         const chHtml = ap.channels.map((ch, s) =>
@@ -1006,9 +1014,12 @@ function tuPopup(tu) {
             <tr><td>RSL</td><td>${e.rslDl.toFixed(1)} dBm</td></tr>
             <tr><td>SNR / SINR</td><td>${e.snrDl.toFixed(1)} / ${c.interf ? e.sinrDl.toFixed(1) : '–'} dB</td></tr>
             <tr><td>I/N</td><td>${c.interf ? fmt(e.iOverN) + ' dB' : 'off'}</td></tr>
-            <tr><td>MCS</td><td>${e.mcsDl} (${MCS_TABLE[e.mcsDl].mod})</td></tr>
-            <tr><td style="color:#007bff;font-weight:bold;">Peak PHY</td><td>${r.peak.toFixed(1)} Mbps</td></tr>
-            <tr><td style="color:#28a745;font-weight:bold;">Avg user</td><td>${r.avg.toFixed(1)} Mbps</td></tr></table>
+            <tr><td>MCS @ ${c.avail}%</td><td>${e.mcsDl} (${MCS_TABLE[e.mcsDl].mod})</td></tr>
+            <tr><td>MCS clear sky</td><td>${e.mcsDlCs} (${MCS_TABLE[e.mcsDlCs].mod}), ${c.interf ? 'SINR' : 'SNR'} ${(c.interf ? e.sinrDlCs : e.snrDlCs).toFixed(1)} dB</td></tr></table>
+            <div class="sub">Throughput (after ${Math.round(c.macEff * 100)}% MAC efficiency)</div><table>
+            <tr><td style="color:#6f42c1;font-weight:bold;">CS-P: clear-sky peak</td><td>${r.peakCs.toFixed(1)} Mbps</td></tr>
+            <tr><td style="color:#007bff;font-weight:bold;">A-P: availability peak @ ${c.avail}%</td><td>${r.peakAv.toFixed(1)} Mbps</td></tr>
+            <tr><td style="color:#28a745;font-weight:bold;">Av: average per user</td><td>${r.avg.toFixed(1)} Mbps (A-P ÷ ${r.groupSize})</td></tr></table>
             <div class="sub">Uplink (SNR, TU ${c.tuTx} dBm)</div><table>
             <tr><td>RSL / SNR</td><td>${e.rslUl.toFixed(1)} dBm / ${e.snrUl.toFixed(1)} dB</td></tr>
             <tr><td>MCS</td><td>${e.mcsUl} (${MCS_TABLE[e.mcsUl].mod}), ${(phyRate(c.bw, e.mcsUl, c.gi) * c.streams).toFixed(0)} Mbps PHY</td></tr></table>`;
@@ -1023,7 +1034,7 @@ function renderTuLabel(tu) {
     const r = tu.result;
     tuLabels[tu.id] = L.marker([tu.lat, tu.lng], {
         interactive: false,
-        icon: L.divIcon({ className: 'tu-label-container', html: `<span class="tu-label">P: ${r.peak.toFixed(0)}M<br>A: ${r.avg.toFixed(0)}M</span>`, iconSize: null, iconAnchor: [-8, -8] })
+        icon: L.divIcon({ className: 'tu-label-container', html: `<span class="tu-label">CS-P: ${r.peakCs.toFixed(0)}M<br>A-P: ${r.peakAv.toFixed(0)}M<br>Av: ${r.avg.toFixed(0)}M</span>`, iconSize: null, iconAnchor: [-8, -8] })
     }).addTo(map);
 }
 
@@ -1046,7 +1057,7 @@ function evalLink(c, ap, s, lat, lng, antKey) {
     const rslDl = ap.txPower + gAp + ant.gain - L;
     const nDl = noiseDbm(c.bw, c.tuNf);
     const snrDl = rslDl - nDl;
-    let iMw = 0;
+    let iMw = 0, iMwCs = 0;   // iMwCs: clear-sky interference (no rain on any path)
     if (c.interf && c.activity > 0) {
         const ch = ap.channels[s];
         const brgServing = getBearing(lat, lng, ap.lat, ap.lng);
@@ -1057,20 +1068,26 @@ function evalLink(c, ap, s, lat, lng, antKey) {
             const gR = ant.gain + patternDb(offRx, ant.bw, tuFloor);
             // Co-sited sectors share the wanted signal's exact path, so they always get the same rain fade
             const Li = linkLoss(c, di, c.rainOnInterf || b.id === ap.id, apRain(b, c)).L;
+            const Li0 = linkLoss(c, di, false).L;
             for (let t = 0; t < b.numSectors; t++) {
                 if ((b.id === ap.id && t === s) || b.channels[t] !== ch) continue;
                 const gT = b.apGain + patternDb(angDiff(brgFromB, sectorCenter(b, t)), b.sectorBeamwidth, c.apFb);
                 iMw += c.activity * Math.pow(10, (b.txPower + gT + gR - Li) / 10);
+                iMwCs += c.activity * Math.pow(10, (b.txPower + gT + gR - Li0) / 10);
             }
         }
     }
     const sinrDl = rslDl - 10 * Math.log10(Math.pow(10, nDl / 10) + iMw);
     const iOverN = iMw > 0 ? 10 * Math.log10(iMw) - nDl : -Infinity;
     const mcsDl = bestMcs(c.interf ? sinrDl : snrDl, c.maxMcs, c.margin);
+    // Clear sky: same link with no rain fade on the wanted signal or on any interferer
+    const rslDlCs = rslDl + rain, snrDlCs = rslDlCs - nDl;
+    const sinrDlCs = rslDlCs - 10 * Math.log10(Math.pow(10, nDl / 10) + iMwCs);
+    const mcsDlCs = bestMcs(c.interf ? sinrDlCs : snrDlCs, c.maxMcs, c.margin);
     const rslUl = c.tuTx + ant.gain + gAp - L;
     const snrUl = rslUl - noiseDbm(c.bw, c.apNf);
     const mcsUl = bestMcs(snrUl, c.maxMcs, c.margin);
-    return { d, off, gAp, L, rain, R, rslDl, snrDl, sinrDl, iOverN, mcsDl, rslUl, snrUl, mcsUl };
+    return { d, off, gAp, L, rain, R, rslDl, snrDl, sinrDl, iOverN, mcsDl, rslDlCs, snrDlCs, sinrDlCs, mcsDlCs, rslUl, snrUl, mcsUl };
 }
 
 /** Boresight downlink range per MCS (thermal noise only), km */
@@ -1389,7 +1406,10 @@ async function assignTUs() {
             secCounts[sk] = secCounts[sk] || 0; apCounts[k.ap.id] = apCounts[k.ap.id] || 0;
             if (secCounts[sk] >= maxTuSec || apCounts[k.ap.id] >= maxTuAp) { k.tu._flags.add('cap'); continue; }
             const ch = k.ap.channels[k.s];
-            k.tu.result = { apId: k.ap.id, s: k.s, half: k.half, ch, ev: k.ev, los: k.los, cfg: c, peak: phyRate(c.bw, k.ev.mcsDl, c.gi) * c.streams };
+            k.tu.result = { apId: k.ap.id, s: k.s, half: k.half, ch, ev: k.ev, los: k.los, cfg: c,
+                // CS-P = clear-sky peak, A-P = availability peak (target availability); both after MAC efficiency
+                peakCs: phyRate(c.bw, k.ev.mcsDlCs, c.gi) * c.streams * c.macEff,
+                peakAv: phyRate(c.bw, k.ev.mcsDl, c.gi) * c.streams * c.macEff };
             const gk = `${k.ap.id}_${k.s}_${k.half}`;
             (groups[gk] = groups[gk] || []).push(k.tu);
             secCounts[sk]++; apCounts[k.ap.id]++; assigned++;
@@ -1402,7 +1422,7 @@ async function assignTUs() {
         // 5. Airtime fairness per half-beam group
         Object.values(groups).forEach(members => members.forEach(tu => {
             tu.result.groupSize = members.length;
-            tu.result.avg = tu.result.peak * c.macEff / members.length;
+            tu.result.avg = tu.result.peakAv / members.length;
             renderTuLabel(tu);
         }));
 
@@ -1519,13 +1539,13 @@ async function calculateCoverage() {
 // --- CSV EXPORT ---
 function exportCsv() {
     if (!tus.length) return logMsg('No TUs to export.', 'warn');
-    const head = ['TU', 'Lat', 'Lng', 'Antenna', 'AP', 'Sector', 'Half', 'Channel', 'Dist_km', 'LoS', 'DL_RSL_dBm', 'DL_SNR_dB', 'DL_SINR_dB', 'I_over_N_dB', 'DL_MCS', 'UL_SNR_dB', 'UL_MCS', 'Group', 'Peak_Mbps', 'Avg_Mbps', 'R001_mmh', 'Rain_dB', 'Note'];
+    const head = ['TU', 'Lat', 'Lng', 'Antenna', 'AP', 'Sector', 'Half', 'Channel', 'Dist_km', 'LoS', 'DL_RSL_dBm', 'DL_SNR_dB', 'DL_SINR_dB', 'I_over_N_dB', 'DL_MCS_avail', 'DL_MCS_clearsky', 'UL_SNR_dB', 'UL_MCS', 'Group', 'CS-P_clearsky_peak_Mbps', 'A-P_availability_peak_Mbps', 'Av_average_Mbps', 'R001_mmh', 'Rain_dB', 'Note'];
     const rows = tus.map(tu => {
         const r = tu.result, e = r && r.ev, ap = r && aps.find(a => a.id === r.apId);
         return [tu.id, tu.lat.toFixed(6), tu.lng.toFixed(6), TU_ANTENNAS[tu.ant].short,
             ap ? ap.name : '', r ? r.s + 1 : '', r ? (r.half ? 'R' : 'L') : '', r ? r.ch : '', e ? e.d.toFixed(3) : '', r ? r.los.status : '',
             e ? e.rslDl.toFixed(1) : '', e ? e.snrDl.toFixed(1) : '', e && r.cfg.interf ? e.sinrDl.toFixed(1) : '', e && isFinite(e.iOverN) ? e.iOverN.toFixed(1) : '',
-            e ? e.mcsDl : '', e ? e.snrUl.toFixed(1) : '', e ? e.mcsUl : '', r ? r.groupSize : '', r ? r.peak.toFixed(1) : '', r ? r.avg.toFixed(1) : '', e ? e.R.toFixed(1) : '', e ? e.rain.toFixed(2) : '', r ? '' : tu.reason]
+            e ? e.mcsDl : '', e ? e.mcsDlCs : '', e ? e.snrUl.toFixed(1) : '', e ? e.mcsUl : '', r ? r.groupSize : '', r ? r.peakCs.toFixed(1) : '', r ? r.peakAv.toFixed(1) : '', r ? r.avg.toFixed(1) : '', e ? e.R.toFixed(1) : '', e ? e.rain.toFixed(2) : '', r ? '' : tu.reason]
             .map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
     });
     const blob = new Blob([head.join(',') + '\n' + rows.join('\n')], { type: 'text/csv' });
@@ -1536,7 +1556,7 @@ function exportCsv() {
 p837Ready.then(ok => {
     if (!ok) { logMsg('P.837-7 rain map could not be loaded in this browser; using the rain zone value instead.', 'warn'); return; }
     aps.forEach(ap => { if (ap.rainRMap == null) ap.rainRMap = p837R001(ap.lat, ap.lng); });
-    renderAPList();
+    renderAPList(); refreshAPLabels();
     const r = p837R001(32.095, 34.956);
     logMsg(`P.837-7 rain map loaded.`);
     if (typeof calcReady !== 'undefined' && calcReady) runCalc();
@@ -1566,20 +1586,24 @@ function syncCalcRain() {
         const r = p837R001(num('cLat'), num('cLon'));
         $('cRainRate').readOnly = true;
         if (r != null) $('cRainRate').value = r.toFixed(1);
+        $('cRainLocInfo').textContent = r != null
+            ? `Rain rate at ${num('cLat').toFixed(4)}, ${num('cLon').toFixed(4)}: R0.01 = ${r.toFixed(1)} mm/h (ITU-R P.837-7)`
+            : 'Rain map not loaded yet: using the value shown.';
     }
+    $('cRainLocInfo').style.display = z === 'map' ? '' : 'none';
 }
 function calcUseApLocation() {
     if (!aps.length) return alert('Place an AP on the map planner first.');
     $('cLat').value = aps[0].lat.toFixed(5); $('cLon').value = aps[0].lng.toFixed(5);
     $('cRainZone').value = 'map'; runCalc();
 }
-fillSelect($('cBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 140);
+fillSelect($('cBw'), Object.keys(BW_TONES).map(b => [b, b + ' MHz']), 320);
 fillSelect($('cTxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'ap60');
 fillSelect($('cRxPreset'), Object.entries(CALC_ANTENNAS).map(([k, a]) => [k, a.label]), 'tu_t30');
 $('cRainZone').addEventListener('change', () => { if ($('cRainZone').value !== 'map') syncRainRate('cRainZone', 'cRainRate'); });
 
 function syncCalcGains() {
-    const f = num('cFreq') || 31, eff = (num('cDishEff') || 55) / 100;
+    const f = num('cFreq') || 26, eff = (num('cDishEff') || 55) / 100;
     [['cTxPreset', 'cTxGain'], ['cRxPreset', 'cRxGain']].forEach(([sel, inp]) => {
         const a = CALC_ANTENNAS[$(sel).value];
         if (a.gain) { $(inp).readOnly = true; $(inp).value = a.gain(f, eff).toFixed(2); }
@@ -1593,7 +1617,7 @@ function readCalc() {
     const md = num('cMaxDist');
     const txKey = $('cTxPreset').value;
     return {
-        freq: clamp(num('cFreq') || 31, 1, 52), pol: $('cPol').value, rainR: Math.max(0, num('cRainRate') || 0), rho: Math.max(0, num('cRho') || 0),
+        freq: clamp(num('cFreq') || 26, 1, 52), pol: $('cPol').value, rainR: Math.max(0, num('cRainRate') || 0), rho: Math.max(0, num('cRho') || 0),
         bw: parseInt($('cBw').value), gi: num('cGi'), maxMcs: clamp(Math.round(num('cMaxMcs')), 0, 13), margin: num('cMargin') || 0,
         txPower: num('cTxPower'), txGain: num('cTxGain'), rxGain: num('cRxGain'), nf: num('cNf'),
         streams: Math.max(1, Math.round(num('cStreams')) || 1), macEff: clamp(num('cMacEff') || 100, 1, 100) / 100,
@@ -1711,6 +1735,7 @@ function runCalc() {
     const p = calcPath(k, k.dist, k.avail), clear = calcPath(k, k.dist, null);
     const noise = noiseDbm(k.bw, k.nf), snr = p.rsl - noise;
     const mcs = bestMcs(snr, k.maxMcs, k.margin);
+    const mcsCs = bestMcs(clear.rsl - noise, k.maxMcs, k.margin);
     const rows = [
         ['Tx power', `${k.txPower.toFixed(2)} dBm`], ['Tx antenna gain', `${k.txGain.toFixed(2)} dBi`], ['EIRP', `${(k.txPower + k.txGain).toFixed(2)} dBm`],
         ['Rx antenna gain', `${k.rxGain.toFixed(2)} dBi`],
@@ -1724,7 +1749,10 @@ function runCalc() {
         ['PHY rate', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams).toFixed(1)} Mbps (${k.streams} streams)` : '0'],
         ['User throughput', mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams * k.macEff).toFixed(1)} Mbps` : '0', 'total'],
         ['Half-peak range (99.9%)', dTxt(hp.dist), 'total'],
-        ['Clear-sky RSL / SNR (no rain)', `${clear.rsl.toFixed(1)} dBm / ${(clear.rsl - noise).toFixed(1)} dB`]
+        ['Clear-sky RSL / SNR (no rain)', `${clear.rsl.toFixed(1)} dBm / ${(clear.rsl - noise).toFixed(1)} dB`],
+        ['Clear-sky MCS', mcsCs >= 0 ? `${mcsCs} (${MCS_TABLE[mcsCs].mod})` : 'Link does not close'],
+        ['CS-P: clear-sky peak', mcsCs >= 0 ? `${(phyRate(k.bw, mcsCs, k.gi) * k.streams * k.macEff).toFixed(1)} Mbps` : '0', 'total'],
+        [`A-P: availability peak @ ${k.avail}%`, mcs >= 0 ? `${(phyRate(k.bw, mcs, k.gi) * k.streams * k.macEff).toFixed(1)} Mbps` : '0', 'total']
     ];
     $('budgetTable').innerHTML = rows.map(([a, b, cls]) => `<tr class="${cls || ''}"><td>${a}</td><td>${b}</td></tr>`).join('');
 
